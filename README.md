@@ -2,19 +2,28 @@
 
 A native Windows launcher for private Minecraft Java modpacks. Owners publish complete releases; friends join by invite and press **Play** to update their persistent Prism instance before Minecraft starts.
 
-Hearth shows the next action for each pack: request approval, set up Prism, install and play, or play the installed copy when its host is offline. **Add modpack** opens invites, **Manage modpacks** handles publishing and members, **Hosting** connects or runs hosts, and **Settings** contains Prism and launcher updates.
+Hearth shows the next action for each pack: request approval, set up Prism, install and play, or play the installed copy when its host is offline. **Add modpack** opens invites, **Manage modpacks** handles publishing and members, **Hosting** connects or runs hosts, and **Settings** contains startup and closing preferences, Prism, and launcher updates.
 
 The same installer contains the launcher and an optional independent Windows host service. A host can serve multiple private packs; a player can join multiple hosts. Hearth distributes mod files. Your existing Minecraft server still runs the shared world.
 
 ## Start here
 
 - [Download the latest Windows installer](https://github.com/BigUziHert/Hearth/releases/latest)
-- Local installer: `artifacts/Hearth-Setup-1.0.3-win-x64.exe`
-- Local source archive: `artifacts/Hearth-Source-1.0.3.zip`
+- Local installer: `artifacts/Hearth-Setup-1.0.4-win-x64.exe`
+- Local source archive: `artifacts/Hearth-Source-1.0.4.zip`
 - [First-time hosting, publishing, and joining](docs/FIRST-RUN.md)
 - [Verification and remaining manual checks](docs/VERIFICATION.md)
 - [HTTP protocol and host data](docs/HOST-PROTOCOL.md)
-- [Changes in 1.0.3](docs/RELEASE-NOTES-1.0.3.md)
+- [Changes in 1.0.4](docs/RELEASE-NOTES-1.0.4.md)
+
+## Startup and the system tray
+
+Open **Settings → Startup & closing**. Both options are off by default:
+
+- **Close to system tray** keeps Hearth running when you close its window. Double-click its tray icon to reopen it, or right-click for **Open Hearth** and **Quit Hearth**.
+- **Start Hearth with Windows** starts the launcher when your Windows account signs in. It does not launch before sign-in. If close to tray is also enabled, Hearth starts quietly in the tray.
+
+Turning these options off restores normal window closing and disables automatic launcher startup. The optional hosting service remains independent: closing or quitting the launcher does not stop hosting. Installer updates preserve these preferences; uninstall removes the launcher's normal startup entry.
 
 ## Build and run
 
@@ -64,11 +73,11 @@ Hearth checks [official releases](https://github.com/BigUziHert/Hearth) from **S
 The [Windows release workflow](.github/workflows/windows-release.yml) builds and tests pull requests and main-branch changes. A `v*` tag also publishes a complete stable GitHub release after all checks pass. To release a later version:
 
 1. Set `Directory.Build.props` to the new version, update script defaults and add `docs/RELEASE-NOTES-VERSION.md`.
-2. Commit and push the source, then push a matching tag such as `v1.0.4`. Tag and source version must match exactly.
-3. The workflow builds `Hearth-Setup-1.0.4-win-x64.exe`, a source ZIP, and `SHA256SUMS.txt`; uploads them to a draft; verifies the expected installer; and publishes the complete release.
+2. Commit and push the source, then push a matching tag such as `v1.0.5`. Tag and source version must match exactly.
+3. The workflow builds `Hearth-Setup-1.0.5-win-x64.exe`, a source ZIP, and `SHA256SUMS.txt`; uploads them to a draft; verifies the expected installer; and publishes the complete release.
 4. In an older Hearth, open **Settings → Updates**, then use **Check for updates → Download update → Restart to update**.
 
-For a manual release, run `scripts/build.ps1 -Version 1.0.4` after changing the source version, then upload the resulting installer, source ZIP, and checksums to a stable `v1.0.4` release. The release must contain exactly one Windows installer whose version matches the tag. Do not replace files in a published release; publish a higher version.
+For a manual release, run `scripts/build.ps1 -Version 1.0.5` after changing the source version, then upload the resulting installer, source ZIP, and checksums to a stable `v1.0.5` release. The release must contain exactly one Windows installer whose version matches the tag. Do not replace files in a published release; publish a higher version.
 
 The updater checks the GitHub asset digest or exact filename in SHA256SUMS, verifies bytes before saving and again before executing, and reuses a verified cached download. Installer updates preserve profiles, Prism instances, and hosted packs. Updating an enabled service requires elevation. Installers are unsigned until a code-signing certificate is configured.
 

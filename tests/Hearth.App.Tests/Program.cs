@@ -41,6 +41,7 @@ internal static class Program
         try
         {
             CheckProfiles(Path.Combine(taskRoot, "migration"));
+            CheckStartup();
             CheckWindows(Path.Combine(taskRoot, "windows"));
             Console.WriteLine($"PASS: {checks} profile and WPF component checks.");
         }
@@ -57,18 +58,41 @@ internal static class Program
         File.WriteAllBytes(path, ProtectedData.Protect(legacyBytes, null, DataProtectionScope.CurrentUser));
         var before = File.ReadAllBytes(path);
         var store = new ProfileStore(taskRoot);
+        Check(!store.State.CloseToTray && !new ProfileState().CloseToTray, "New and legacy profiles keep close-to-tray off until enabled");
         Check(File.ReadAllBytes(path).SequenceEqual(before), "Reading a legacy profile does not rewrite its encrypted bytes");
         Check(store.State.Packs.Single().Terrain == TerrainMode.Voxy && store.State.Packs.Single().Token == "local-test-token", "Existing pack credential and terrain choice survive legacy profile loading");
         Check(store.State.DisplayName == "Test player" && store.State.PrismExecutable == "fixture-prism.exe" && store.State.SelectedPackHost == host.Url && store.State.SelectedPackId == "fixture-pack", "Player preferences survive a legacy custom-source profile");
         Check(store.State.Hosts.Single() == host, "Host connection and owner credential survive legacy profile loading");
-        store.State.DisplayName = "Renamed player"; store.Save();
+        store.State.DisplayName = "Renamed player"; store.State.CloseToTray = true; store.Save();
         var reloaded = new ProfileStore(taskRoot);
         Check(reloaded.State.DisplayName == "Renamed player", "Ordinary profile changes still save after loading legacy settings");
+        Check(reloaded.State.CloseToTray, "Close-to-tray preference survives encrypted save and reload");
         var decoded = Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(path), null, DataProtectionScope.CurrentUser));
         using var document = JsonDocument.Parse(decoded);
         Check(!document.RootElement.TryGetProperty("updateRepository", out _) && !document.RootElement.TryGetProperty("effectiveUpdateRepository", out _) && !document.RootElement.TryGetProperty("usesOfficialUpdateRepository", out _), "Legacy custom update source is ignored and omitted on the next profile save");
         Check(reloaded.State.Packs.Single().Terrain == TerrainMode.Voxy && reloaded.State.Packs.Single().Token == "local-test-token" && reloaded.State.Hosts.Single() == host, "Existing pack and host preferences survive encrypted save and reload");
         Check(!Encoding.UTF8.GetString(File.ReadAllBytes(path)).Contains("local-test-token", StringComparison.Ordinal), "Saved profile does not expose the member credential as plaintext");
+    }
+    private static void CheckStartup()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "Hs-" + Guid.NewGuid().ToString("N")[..8]);
+        const string runKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        using var before = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(runKey);
+        var normalBefore = before?.GetValue("Hearth");
+        try
+        {
+            Check(!WindowsStartup.IsEnabled(root), "Windows startup is opt-in for a new profile");
+            var command = WindowsStartup.BuildCommand(@"C:\Profiles\Test player", @"C:\Program Files\Hearth\Hearth.App.exe");
+            Check(command == "\"C:\\Program Files\\Hearth\\Hearth.App.exe\" --startup --profile \"C:\\Profiles\\Test player\"", "Startup command quotes spaced paths and passes the selected profile");
+            Check(WindowsStartup.GetValueName(root) != "Hearth" && WindowsStartup.GetValueName(root) == WindowsStartup.GetValueName(root + "\\"), "Test startup registration is separate and normalizes trailing separators");
+            WindowsStartup.SetEnabled(root, true);
+            Check(WindowsStartup.IsEnabled(root), "Enabling startup registers the executable for the current Windows user");
+            WindowsStartup.SetEnabled(root, false);
+            Check(!WindowsStartup.IsEnabled(root), "Disabling startup removes the profile's registration");
+            using var after = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(runKey);
+            Check(Equals(normalBefore, after?.GetValue("Hearth")), "Startup testing leaves the real player's registration unchanged");
+        }
+        finally { WindowsStartup.SetEnabled(root, false); }
     }
     private static T Named<T>(MainWindow window, string name) where T : FrameworkElement => (T)window.FindName(name);
     private static void Click(MainWindow window, string name) => Named<Button>(window, name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -123,6 +147,12 @@ internal static class Program
             Capture(empty, "hosting");
             Click(empty, "SettingsNav");
             Check(Descendants(empty).OfType<TextBlock>().Any(text => text.Text == "Official Hearth releases") && Descendants(empty).OfType<Button>().Count(button => button.Content is string text && text == "Check for updates") == 1, "Settings shows one update action for official Hearth releases");
+            var options = Descendants(empty).OfType<CheckBox>().ToArray();
+            Check(options.Length == 2 && options.All(option => option.IsChecked == false), "Settings exposes both startup and closing choices, initially off");
+            var closeOption = options.Single(option => Equals(option.Content, "Close to system tray"));
+            closeOption.IsChecked = true; closeOption.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
+            Check(new ProfileStore(Path.Combine(taskRoot, "empty")).State.CloseToTray, "Close-to-tray setting saves immediately from Settings");
+            closeOption.IsChecked = false; closeOption.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent));
             Capture(empty, "settings");
         }
         finally { empty.Close(); }

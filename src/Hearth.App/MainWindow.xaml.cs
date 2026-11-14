@@ -26,6 +26,8 @@ public partial class MainWindow : Window
     private TextBlock? draftSummary;
     private string selectedGroup = "base";
     private bool busy;
+    private bool exitRequested;
+    private TaskCompletionSource? operationFinished;
     public MainWindow(ProfileStore profile)
     {
         InitializeComponent(); store = profile; sync = new(store.Root); prism = new(store.Root);
@@ -41,7 +43,12 @@ public partial class MainWindow : Window
         try { HeroImage.Source = new BitmapImage(new Uri("pack://application:,,,/Hearth.App;component/Assets/pack-landscape.png")); } catch (IOException) { }
         TerrainOff.Checked += Terrain_Checked; TerrainVoxy.Checked += Terrain_Checked; TerrainDh.Checked += Terrain_Checked;
         ShowLibrary();
-        Closing += (_, e) => { if (busy) { e.Cancel = true; Status("An operation is in progress. Cancel it before closing Hearth."); } };
+        Closing += (_, e) =>
+        {
+            var app = Application.Current as App;
+            if (busy && app?.IsExiting != true && !(store.State.CloseToTray && app?.TrayAvailable == true))
+            { e.Cancel = true; Status("An operation is in progress. Cancel it before closing Hearth."); }
+        };
         Closed += (_, _) => { packStatusCancellation?.Cancel(); packStatusCancellation?.Dispose(); };
     }
     [DllImport("dwmapi.dll")]
@@ -89,7 +96,7 @@ public partial class MainWindow : Window
     private void Status(string text) { StatusText.Text = text; StatusText.ToolTip = text; }
     private async Task Run(string label, Func<CancellationToken, Task> work)
     {
-        if (busy) return; busy = true; operation = new(); MainContent.IsEnabled = SidebarPanel.IsEnabled = false;
+        if (busy || exitRequested) return; busy = true; operation = new(); operationFinished = new(TaskCreationOptions.RunContinuationsAsynchronously); MainContent.IsEnabled = SidebarPanel.IsEnabled = false;
         Progress.Visibility = CancelButton.Visibility = Visibility.Visible; Status(label);
         try { await work(operation.Token); }
         catch (OperationCanceledException) { Status("Cancelled. No incomplete release was applied."); }
@@ -98,8 +105,18 @@ public partial class MainWindow : Window
         {
             busy = false; operation.Dispose(); operation = null; MainContent.IsEnabled = SidebarPanel.IsEnabled = true;
             Progress.Visibility = CancelButton.Visibility = Visibility.Collapsed;
-            if (inviteQueued) { inviteQueued = false; ShowAddPack(); }
+            operationFinished.TrySetResult(); operationFinished = null;
+            if (inviteQueued && !exitRequested) { inviteQueued = false; ShowAddPack(); }
         }
+    }
+    public async void RequestQuit()
+    {
+        if (exitRequested) return;
+        exitRequested = true;
+        var completion = operationFinished?.Task;
+        operation?.Cancel();
+        if (completion != null) await completion;
+        if (Application.Current is App app) app.ExitApplication(); else Close();
     }
     private void Library_Click(object sender, RoutedEventArgs e) => ShowLibrary();
     private void AddPack_Click(object sender, RoutedEventArgs e) => ShowAddPack();

@@ -2,7 +2,7 @@
 
 ## Join and play
 
-1. Install `Hearth-Setup-1.0.3-win-x64.exe` and open Hearth.
+1. Install `Hearth-Setup-1.0.4-win-x64.exe` and open Hearth.
 2. Select **Add modpack**, paste your friend's `hearth://join?...` invite, enter the name they know you by, and select **Request access**. You can also open an invite directly after installing Hearth.
 3. Select the pack in the sidebar. Open **⋯ → Member details & fingerprint** and tell the owner your name and fingerprint so they approve the correct request. Select **Check approval** after they approve you.
 4. The main button becomes **Set up Prism** if Minecraft setup is needed. Hearth downloads and verifies the official portable Windows launcher. Finish Prism's first-run wizard, then use **Settings → Accounts → Add Microsoft** inside Prism. Sign in with your own account that owns Minecraft Java and let Prism configure Java. You can reopen Prism from Hearth's **Settings → Open Prism**.
@@ -12,6 +12,15 @@
 Close this pack's Minecraft and Hearth Prism window before updating or changing terrain. If a transfer fails, retry Play. When a host is unavailable and a complete copy is installed, the main button becomes **Play installed**; this uses the last complete copy without applying updates or a terrain change. **⋯ → Play installed release** also opens that copy. Prism account requirements still apply.
 
 Your local worlds, controls, graphics, screenshots, and other personal files remain in the same instance. A conflicting personal JAR is left alone; move or rename it and retry. **⋯ → Remove from library** removes the saved pack entry while keeping its downloaded instance. A current invite lets you request access again.
+
+## Startup and closing
+
+In **Settings → Startup & closing**, choose either option independently. Both are off by default.
+
+- **Close to system tray**: closing the window keeps Hearth running. Find its icon beside the Windows clock or under the hidden-icons arrow. Double-click to reopen it, or right-click and select **Open Hearth** or **Quit Hearth**. Quit exits the launcher completely.
+- **Start Hearth with Windows**: open Hearth when your Windows account signs in after starting the PC. This starts the launcher after sign-in, not before login. If **Close to system tray** is also enabled, it starts quietly in the tray.
+
+You can turn either option off here. These choices do not change the independent hosting service: it continues serving packs even after you quit the launcher. Updates keep your preferences, and uninstall removes automatic startup for the normal launcher profile.
 
 ## Host from your always-on Windows PC
 

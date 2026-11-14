@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 [CmdletBinding()]
-param([switch]$SkipTests, [switch]$SkipInstaller, [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.0.3', [string]$IsccPath)
+param([switch]$SkipTests, [switch]$SkipInstaller, [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.0.4', [string]$IsccPath)
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
@@ -15,6 +15,7 @@ Invoke-Dotnet @('build','Hearth.sln','-c','Release',('-p:Version=' + $Version))
 if (-not $SkipTests) {
     Invoke-Dotnet @('run','--project','tests/Hearth.Tests','-c','Release','--no-build')
     Invoke-Dotnet @('run','--project','tests/Hearth.App.Tests','-c','Release','--no-build')
+    Invoke-Dotnet @('run','--project','tests/Hearth.Lifecycle.Tests','-c','Release','--no-build')
 }
 $publish = Join-Path $repo 'artifacts\publish'
 foreach ($parent in @((Join-Path $repo 'artifacts'),$publish)) {

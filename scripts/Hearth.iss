@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.3"
+  #define AppVersion "1.0.4"
 #endif
 #define AppName "Hearth"
 #define AppExe "Hearth.App.exe"
@@ -43,6 +43,8 @@ Name: "{group}\Hearth"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\Hearth"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Registry]
+; Startup is opt-in inside Hearth. Record cleanup without changing it on install/update.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Hearth"; Flags: dontcreatekey uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\hearth"; ValueType: string; ValueName: ""; ValueData: "URL:Hearth pack invite"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\hearth"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\hearth\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExe},0"

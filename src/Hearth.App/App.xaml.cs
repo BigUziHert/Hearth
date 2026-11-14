@@ -9,6 +9,10 @@ public partial class App : Application
 {
     private Mutex? singleInstance;
     private CancellationTokenSource pipeCancel = new();
+    private ProfileStore? profile;
+    private TrayController? tray;
+    public bool IsExiting { get; private set; }
+    public bool TrayAvailable => tray != null;
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -20,12 +24,34 @@ public partial class App : Application
             var pipe = "Hearth-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(root.ToLowerInvariant())))[..20];
             singleInstance = new Mutex(true, "Local\\" + pipe, out var first);
             var invite = e.Args.FirstOrDefault(a => a.StartsWith("hearth://", StringComparison.OrdinalIgnoreCase));
+            var startup = e.Args.Contains("--startup", StringComparer.Ordinal);
             if (!first)
             {
+                // A second Windows startup invocation should not interrupt an
+                // already-running launcher. Invites still bring it forward.
+                if (startup && invite == null) { Shutdown(); return; }
                 using var client = new NamedPipeClientStream(".", pipe, PipeDirection.Out, PipeOptions.CurrentUserOnly);
                 client.Connect(2000); using var writer = new StreamWriter(client); writer.WriteLine(invite ?? "activate"); writer.Flush(); Shutdown(); return;
             }
-            var window = new MainWindow(new ProfileStore(root)); MainWindow = window; window.Show();
+            profile = new ProfileStore(root);
+            var window = new MainWindow(profile); MainWindow = window;
+            window.Closing += (_, args) =>
+            {
+                if (!args.Cancel && !IsExiting && profile.State.CloseToTray && tray != null)
+                {
+                    args.Cancel = true;
+                    tray.HideWindow();
+                }
+            };
+            try { ApplyTraySettings(); }
+            catch (Exception ex)
+            {
+                // Keep a visible, usable window if the tray could not initialize.
+                window.Show();
+                MessageBox.Show(window, "Hearth could not start its tray icon. The window will stay open.\n\n" + ex.Message,
+                    "System tray unavailable", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            if (!startup || invite != null || !TrayAvailable) window.Show();
             if (invite != null) window.OpenInvite(invite);
             _ = ListenAsync(pipe, window);
         }
@@ -40,11 +66,51 @@ public partial class App : Application
                 using var server = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await server.WaitForConnectionAsync(pipeCancel.Token);
                 using var reader = new StreamReader(server); var value = await reader.ReadLineAsync(pipeCancel.Token);
-                await Dispatcher.InvokeAsync(() => { window.WindowState = WindowState.Normal; window.Activate(); if (value?.StartsWith("hearth://") == true) window.OpenInvite(value); });
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (IsExiting) return;
+                    if (tray != null) tray.Restore();
+                    else { if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal; window.Show(); window.Activate(); }
+                    if (value?.StartsWith("hearth://", StringComparison.OrdinalIgnoreCase) == true) window.OpenInvite(value);
+                });
             }
             catch (OperationCanceledException) { break; }
             catch (IOException) { }
         }
     }
-    protected override void OnExit(ExitEventArgs e) { pipeCancel.Cancel(); singleInstance?.Dispose(); base.OnExit(e); }
+    public void ApplyTraySettings()
+    {
+        Dispatcher.VerifyAccess();
+        if (MainWindow is not MainWindow window || profile == null) return;
+        if (profile.State.CloseToTray) tray ??= new TrayController(window, window.RequestQuit);
+        else if (tray != null)
+        {
+            tray.Restore();
+            tray.Dispose();
+            tray = null;
+        }
+    }
+
+    public void ExitApplication()
+    {
+        IsExiting = true;
+        Shutdown();
+    }
+
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        // Closing to the tray must never prevent Windows shutdown or sign-out.
+        IsExiting = true;
+        base.OnSessionEnding(e);
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        IsExiting = true;
+        pipeCancel.Cancel();
+        tray?.Dispose();
+        tray = null;
+        singleInstance?.Dispose();
+        base.OnExit(e);
+    }
 }

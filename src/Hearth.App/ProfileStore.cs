@@ -12,6 +12,7 @@ public sealed class ProfileState
     public string PrismExecutable { get; set; } = "";
     public string SelectedPackHost { get; set; } = "";
     public string SelectedPackId { get; set; } = "";
+    public bool CloseToTray { get; set; }
 }
 public sealed class ProfileStore
 {
