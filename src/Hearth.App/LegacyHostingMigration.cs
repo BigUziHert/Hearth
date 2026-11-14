@@ -23,8 +23,8 @@ public static class LegacyHostingMigration
         AdoptDescriptor(profile, descriptor, System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value ?? "");
     }
 
-    // The installer writes this descriptor only after it has stopped and removed
-    // the service and granted the original installing user access to its data.
+    // The installer records the original state before retiring the service.
+    // Adopt() waits for its registration to be gone before using this descriptor.
     public static void AdoptDescriptor(ProfileStore profile, string descriptor, string ownerSid)
     {
         if (profile.State.LegacyHostingMigrated) return;
