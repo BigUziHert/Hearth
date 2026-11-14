@@ -48,7 +48,7 @@ public partial class MainWindow
     }
     private InstalledPack? LocalInstallation(JoinedPack pack)
     {
-        try { return sync.GetInstalled(pack.HostUrl, pack.PackId); }
+        try { return sync.GetInstalled(pack.InstallationUrl, pack.PackId); }
         catch (Exception ex) when (ex is IOException or JsonException) { return null; }
     }
     private void ShowLibrary()
@@ -134,8 +134,8 @@ public partial class MainWindow
         var accessApproved = false;
         try
         {
-            using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(12) };
-            using var api = new HearthApi(pack.HostUrl, pack.Token, http);
+            using var http = HearthApi.CreateClient(pack.CertificatePin, TimeSpan.FromSeconds(12));
+            using var api = new HearthApi(pack.HostUrl, pack.Token, http, pack.CertificatePin);
             var access = await api.AccessAsync(pack.PackId, ct);
             if (!IsCurrentRequest()) return;
             knownPackRoles[PackKey(pack)] = access.Status == "approved" ? access.Role : "player";
@@ -204,8 +204,8 @@ public partial class MainWindow
         void Item(string name, Action action, bool enabled = true) { var item = new MenuItem { Header = name, IsEnabled = enabled }; item.Click += (_, _) => { if (IsCurrentPack(pack)) action(); }; menu.Items.Add(item); }
         Item("Check access & updates", () => _ = RefreshSelectedStatus());
         Item("Member details & fingerprint", () => ShowPackDetails(pack));
-        if (Directory.Exists(sync.GetInstanceDirectory(pack.HostUrl, pack.PackId)))
-            Item("Open instance folder", () => OpenFolder(sync.GetInstanceDirectory(pack.HostUrl, pack.PackId)));
+        if (Directory.Exists(sync.GetInstanceDirectory(pack.InstallationUrl, pack.PackId)))
+            Item("Open instance folder", () => OpenFolder(sync.GetInstanceDirectory(pack.InstallationUrl, pack.PackId)));
         if (LocalInstallation(pack) != null)
         {
             Item("Play installed release", () => _ = PlayInstalled(pack), AvailablePrismExe() != null);
@@ -235,15 +235,23 @@ public partial class MainWindow
     }
     private async Task PlayInstalled(JoinedPack pack) => await Run("Checking the installed release…", async ct =>
     {
-        await sync.VerifyInstalledAsync(pack.HostUrl, pack.PackId, ct);
+        await sync.VerifyInstalledAsync(pack.InstallationUrl, pack.PackId, ct);
         ct.ThrowIfCancellationRequested();
-        prism.Launch(PrismExe(), sync.GetInstanceId(pack.HostUrl, pack.PackId)); Status("Prism opened your previous complete release. No pack update was applied.");
+        prism.Launch(PrismExe(), sync.GetInstanceId(pack.InstallationUrl, pack.PackId)); Status("Prism opened your previous complete release. No pack update was applied.");
     });
     private async Task ManageJoinedPack(JoinedPack pack) => await Run("Checking owner access…", async ct =>
     {
-        using var api = new HearthApi(pack.HostUrl, pack.Token); var owned = await api.ListPacksAsync(ct); var match = owned.FirstOrDefault(p => p.Id == pack.PackId) ?? throw new InvalidOperationException("Ask the host administrator to make you an owner of this pack first.");
-        var ownerHost = store.State.Hosts.FirstOrDefault(h => h.Url == pack.HostUrl && h.OwnerToken == pack.Token);
-        if (ownerHost == null) { ownerHost = new(Guid.NewGuid().ToString("N"), pack.Name + " · owner", pack.HostUrl, pack.Token); store.State.Hosts.Add(ownerHost); store.Save(); }
+        using var api = new HearthApi(pack.HostUrl, pack.Token, certificatePin: pack.CertificatePin); var owned = await api.ListPacksAsync(ct); var match = owned.FirstOrDefault(p => p.Id == pack.PackId) ?? throw new InvalidOperationException("Ask the host administrator to make you an owner of this pack first.");
+        var ownerHost = store.State.Hosts.FirstOrDefault(h => h.OwnerToken == pack.Token && (h.Url == pack.HostUrl
+            || (pack.CertificatePin is not null && h.CertificatePin is not null && pack.HostId is not null
+                && pack.CertificatePin.Equals(h.CertificatePin, StringComparison.OrdinalIgnoreCase) && pack.HostId == h.HostId)));
+        if (ownerHost == null) { ownerHost = new(Guid.NewGuid().ToString("N"), pack.Name + " · owner", pack.HostUrl, pack.Token, pack.CertificatePin, pack.HostId); store.State.Hosts.Add(ownerHost); store.Save(); }
+        else if (ownerHost.Url != pack.HostUrl)
+        {
+            var index = store.State.Hosts.IndexOf(ownerHost);
+            ownerHost = ownerHost with { Url = pack.HostUrl };
+            store.State.Hosts[index] = ownerHost; store.Save();
+        }
         var latest = match.ReleaseId == null ? null : await api.ManifestAsync(match.Id, ct);
         var path = DraftPath(ownerHost.Id, match.Id); var loaded = File.Exists(path) ? JsonSerializer.Deserialize<DraftState>(File.ReadAllText(path), JsonDefaults.Options) : null;
         loaded ??= new() { BaseReleaseId = latest?.ReleaseId, Files = latest?.Files.Select(f => new DraftItem(f, null)).ToList() ?? [] };
@@ -257,18 +265,10 @@ public partial class MainWindow
         var name = Field(join, "Your name", store.State.DisplayName); name.MaxLength = 80;
         join.Children.Add(Row(Button("Request access", () => _ = Run("Requesting access…", async ct =>
         {
-            var invite = Invite.Parse(inviteBox.Text); if (string.IsNullOrWhiteSpace(name.Text)) throw new InvalidOperationException("Enter your name so the owner knows who to approve.");
-            var existing = store.State.Packs.FirstOrDefault(p => p.HostUrl == invite.HostUrl && p.PackId == invite.PackId);
-            if (existing != null)
-            {
-                using var current = new HearthApi(existing.HostUrl, existing.Token);
-                try { var access = await current.AccessAsync(existing.PackId, ct); if (access.Status is "approved" or "pending") { pendingInvite = ""; SelectPack(existing); Status(access.Status == "pending" ? "Your request is waiting for the owner's approval." : "This pack is already in your library."); return; } }
-                catch (HostApiException ex) when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) { }
-            }
-            using var api = new HearthApi(invite.HostUrl); var result = await api.JoinAsync(invite.PackId, new(invite.Code, name.Text.Trim()), ct);
-            var joined = new JoinedPack(invite.HostUrl, result.PackId, result.Name, result.Token, result.MemberId, existing?.Terrain ?? TerrainMode.Off);
-            if (existing != null) store.State.Packs.Remove(existing);
-            store.State.DisplayName = name.Text.Trim(); ProfileLabel.Text = store.State.DisplayName.ToUpperInvariant(); store.State.Packs.Add(joined); pendingInvite = ""; SelectPack(joined); Status("Request sent. Ask your friend to approve you.");
+            var result = await PackJoining.JoinAsync(store, Invite.Parse(inviteBox.Text), name.Text, ct);
+            ProfileLabel.Text = store.State.DisplayName.ToUpperInvariant(); pendingInvite = ""; SelectPack(result.Pack);
+            Status(result.Status == "approved" ? "Pack connected. Your installed files and preferences were kept."
+                : result.Reused ? "Your request is waiting for the owner's approval." : "Request sent. Ask your friend to approve you.");
         }))));
         inviteBox.Focus();
     }

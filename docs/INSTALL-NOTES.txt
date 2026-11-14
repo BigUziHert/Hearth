@@ -2,7 +2,7 @@ Welcome to Hearth.
 
 Players: open Hearth and paste your pack invite. The owner approves you, then Hearth guides you through Prism setup before you play. Sign into Prism with your own Microsoft account that owns Minecraft Java.
 
-Owners: enable hosting from Hearth on your always-on PC. Hosting runs while Hearth is open or in the system tray, and stops when you quit. Fresh hosting needs no administrator permission. Use Settings > Startup & closing to choose close to tray and start with Windows after sign-in.
+Owners: enable hosting from Hearth on your always-on PC. Hosting runs while Hearth is open or in the system tray, and stops when you quit. The first hosting setup asks Windows permission for its firewall rule and automatically attempts router setup. Hearth provides connection links; no proxy or certificate installation is needed. Use Settings > Startup & closing to choose close to tray and start with Windows after sign-in.
 
 Your Minecraft server is separate: Hearth hosts modpack files, not the shared world.
 

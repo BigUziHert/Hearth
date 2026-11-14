@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Hearth.Core\Hearth.Core.csproj" />
+    <ProjectReference Include="..\..\src\Hearth.Host\Hearth.Host.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

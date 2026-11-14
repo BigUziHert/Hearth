@@ -30,14 +30,23 @@ sealed class IntegrationSuite
     readonly List<string> logs = [];
     Process? host;
     string url = "", data = "";
-    int port;
+    int port, httpsPort;
     bool complete;
     public async Task Run()
     {
         data = Path.Combine(root, "artifacts", "verification", DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]); Directory.CreateDirectory(data);
+        InternetAccessChecks.Run(Path.Combine(data, "internet-access"), Check);
         var key = Path.Combine(data,"owner.init.key"); await File.WriteAllTextAsync(key, token); port = FreePort(); url = "http://127.0.0.1:" + port;
         using (var init = Start("--init","--data",Path.Combine(data,"host"),"--owner-token-file",key,"--port",port.ToString())) { await init.WaitForExitAsync(); Check(init.ExitCode == 0,"Host initializes with a hashed owner credential"); }
-        File.Delete(key); await StartAndWait();
+        File.Delete(key); do { httpsPort = FreePort(); } while (httpsPort == port); await StartAndWait();
+        string certificatePin;
+        using (var certificate = HostCertificate.LoadOrCreate(Path.Combine(data, "host"))) certificatePin = HostCertificate.GetPin(certificate);
+        using (var securedOwner = new HearthApi("https://127.0.0.1:" + httpsPort, token, certificatePin: certificatePin))
+            Check((await securedOwner.ListPacksAsync()).Count == 0, "Host CLI exposes its authenticated HTTPS listener alongside loopback management");
+        using (var wrongIdentity = new HearthApi("https://127.0.0.1:" + httpsPort, token, certificatePin: new string('0', 64)))
+            await Throws<HttpRequestException>(() => wrongIdentity.HealthAsync(), "Real host HTTPS rejects a mismatched certificate identity");
+        using (var unpinned = new HearthApi("https://127.0.0.1:" + httpsPort, token))
+            await Throws<HttpRequestException>(() => unpinned.HealthAsync(), "Real host self-signed HTTPS requires its pinned identity");
         using var owner = new HearthApi(url, token); using var anon = new HearthApi(url);
         Check(!string.IsNullOrWhiteSpace((await anon.HealthAsync()).HostId), "Public health endpoint exposes service identity");
         var a = await owner.CreatePackAsync(new("Coast & Copper","1.21.1","fabric","0.16.10"));
@@ -114,10 +123,13 @@ sealed class IntegrationSuite
         await Denied(()=>aa.ManifestAsync(a.Id),"Removed credential stays revoked after a fresh join");
         Check((await promoted.PublishAsync(a.Id,Publish(a,[dep.File],r5.ReleaseId))).ReleaseId != r5.ReleaseId,"Authorized pack owner can publish");
         Stop(); await StartAndWait(); Check((await ba.ManifestAsync(b.Id)).ReleaseId==rb.ReleaseId && (await promoted.AccessAsync(a.Id)).Role=="owner","Host restart preserves releases and access");
+        using (var restartedOwner = new HearthApi("https://127.0.0.1:" + httpsPort, token, certificatePin: certificatePin))
+            Check((await restartedOwner.ListPacksAsync()).Count == 2, "Actual host restart preserves the trusted HTTPS certificate and owner access");
         var persisted=string.Join('\n',Directory.EnumerateFiles(Path.Combine(data,"host"),"*.json",SearchOption.AllDirectories).Select(File.ReadAllText)); Check(!persisted.Contains(token)&&!persisted.Contains(alice.Token)&&!persisted.Contains(bob.Token),"No plaintext bearer credentials in host JSON");
         using(var metadata=JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(first.InstanceDirectory,"mmc-pack.json")))) Check(metadata.RootElement.GetProperty("components").EnumerateArray().Any(x=>x.GetProperty("uid").GetString()=="net.fabricmc.fabric-loader"),"Prism metadata includes selected loader");
         await Integrations(first);
         FlowInputChecks.Run(Check);
+        await SecureHostChecks.RunAsync(Path.Combine(data, "secure-host-checks"), Check);
         await InstalledPlayChecks.RunAsync(Path.Combine(data, "offline-play-checks"), Check);
         complete=true; Console.WriteLine($"PASS: {checks.Count} checks. Evidence: {Path.Combine(data,"report.json")}");
     }
@@ -172,7 +184,7 @@ sealed class IntegrationSuite
     async Task Rejected(Func<Task> action,string label) { try { await action(); throw new Exception("Invalid request accepted: "+label); } catch(HostApiException ex) when((int)ex.StatusCode is >=400 and <500) { Check(true,label); } }
     async Task Throws<T>(Func<Task> action,string label) where T:Exception { try { await action(); throw new Exception("Expected failure missing: "+label); } catch(T) { Check(true,label); } }
     void Check(bool ok,string label) { checks.Add(new{name=label,passed=ok}); Console.WriteLine((ok?"PASS ":"FAIL ")+label); if(!ok) throw new Exception(label); }
-    async Task StartAndWait() { host=Start("--data",Path.Combine(data,"host"),"--port",port.ToString()); using var api=new HearthApi(url); for(var i=0;i<100;i++) { if(host.HasExited) throw new Exception("Host exited: "+string.Join('\n',logs)); try { await api.HealthAsync(); return; } catch(HttpRequestException) { await Task.Delay(150); } } throw new TimeoutException("Host failed to start."); }
+    async Task StartAndWait() { host=Start("--data",Path.Combine(data,"host"),"--port",port.ToString(),"--bind","127.0.0.1","--https-port",httpsPort.ToString()); using var api=new HearthApi(url); for(var i=0;i<100;i++) { if(host.HasExited) throw new Exception("Host exited: "+string.Join('\n',logs)); try { await api.HealthAsync(); return; } catch(HttpRequestException) { await Task.Delay(150); } } throw new TimeoutException("Host failed to start."); }
     Process Start(params string[] args) { var dll=Path.Combine(root,"src","Hearth.Host","bin","Release","net10.0","Hearth.Host.dll"); if(!File.Exists(dll)) dll=dll.Replace("Release","Debug"); var dotnet=Path.Combine(root,"tools","dotnet","dotnet.exe"); if(!File.Exists(dotnet))dotnet="dotnet"; var si=new ProcessStartInfo(dotnet){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true}; si.ArgumentList.Add(dll); foreach(var a in args) si.ArgumentList.Add(a); var p=Process.Start(si)!; p.OutputDataReceived+=(_,e)=>{if(e.Data!=null)lock(logs)logs.Add(e.Data);}; p.ErrorDataReceived+=(_,e)=>{if(e.Data!=null)lock(logs)logs.Add(e.Data);}; p.BeginOutputReadLine(); p.BeginErrorReadLine(); return p; }
     void Stop() { if(host is {HasExited:false}) { host.Kill(true); host.WaitForExit(); } host?.Dispose(); host=null; }
     public async Task Finish() { Stop(); if(data.Length>0) { await File.WriteAllTextAsync(Path.Combine(data,"report.json"),JsonSerializer.Serialize(new{complete,generatedUtc=DateTimeOffset.UtcNow,hostUrl=url,profileRoot=Path.Combine(data,"profiles"),checks},JsonDefaults.Options)); await File.WriteAllLinesAsync(Path.Combine(data,"host.log"),logs); await File.WriteAllTextAsync(Path.Combine(root,"artifacts","verification","latest.txt"),data); } }

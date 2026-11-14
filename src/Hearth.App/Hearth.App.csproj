@@ -4,6 +4,7 @@
     <ProjectReference Include="..\Hearth.Core\Hearth.Core.csproj" />
     <Resource Include="Assets\pack-landscape.png" />
     <Resource Include="Assets\Hearth.ico" />
+    <Content Include="..\..\scripts\configure-host-firewall.ps1" Link="scripts\configure-host-firewall.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Using Remove="System.Drawing" />
     <Using Remove="System.Windows.Forms" />
   </ItemGroup>

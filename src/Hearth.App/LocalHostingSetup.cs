@@ -7,7 +7,7 @@ namespace Hearth.App;
 public static class LocalHostingSetup
 {
     public static async Task<HostConnection> EnableAsync(ProfileStore store, string hostUrl, string dataDirectory,
-        Func<string, CancellationToken, Task> start, CancellationToken cancellationToken = default)
+        Func<string, CancellationToken, Task> start, CancellationToken cancellationToken = default, Func<string?>? verifiedHostId = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var state = store.State;
@@ -28,8 +28,8 @@ public static class LocalHostingSetup
         await start(state.LocalHostOwnerToken, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var ready = local == null
-            ? new HostConnection(Guid.NewGuid().ToString("N"), "This PC", hostUrl, state.LocalHostOwnerToken)
-            : local with { Url = hostUrl, OwnerToken = state.LocalHostOwnerToken };
+            ? new HostConnection(Guid.NewGuid().ToString("N"), "This PC", hostUrl, state.LocalHostOwnerToken, HostId: verifiedHostId?.Invoke())
+            : local with { Url = hostUrl, OwnerToken = state.LocalHostOwnerToken, HostId = verifiedHostId?.Invoke() ?? local.HostId };
         var oldEnabled = state.LocalHostingEnabled;
         var oldId = state.LocalHostConnectionId;
         var oldMigration = state.LegacyHostingMigrated;

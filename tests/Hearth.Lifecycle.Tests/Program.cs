@@ -26,6 +26,7 @@ internal static class Program
         try
         {
             OwnedHostChecks.RunAsync(Path.Combine(taskRoot, "runtime"), Check).GetAwaiter().GetResult();
+            SecureHostingLifecycleChecks.RunAsync(Path.Combine(taskRoot, "secure-runtime"), Check).GetAwaiter().GetResult();
             foreach (var name in new[] { "normal-close", "tray-restore", "startup-tray", "startup-visible", "quit-busy", "session-ending" })
             {
                 var root = Path.Combine(taskRoot, name);

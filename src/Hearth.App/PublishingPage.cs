@@ -75,7 +75,7 @@ public partial class MainWindow
         var ct = ownerListRequest.Token;
         try
         {
-            using var api = new HearthApi(host.Url, host.OwnerToken);
+            using var api = new HearthApi(host.Url, host.OwnerToken, certificatePin: host.CertificatePin);
             var packs = await api.ListPacksAsync(ct);
             var administrator = await IsHostAdministrator(host, ct);
             if (ct.IsCancellationRequested || selectedHost?.Id != host.Id || activePage != "publish" || !panel.IsDescendantOf(Page)) return;
@@ -111,7 +111,7 @@ public partial class MainWindow
     private static string FileName(PackFile file) => Path.GetFileName(file.Path);
     private static async Task<bool> IsHostAdministrator(HostConnection host, CancellationToken ct)
     {
-        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(12) };
+        using var http = HearthApi.CreateClient(host.CertificatePin, TimeSpan.FromSeconds(12));
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", host.OwnerToken);
         using var response = await http.GetAsync(host.Url + "/owner/status", ct);
         if (response.StatusCode == HttpStatusCode.Forbidden) return false;
@@ -135,7 +135,7 @@ public partial class MainWindow
         var versionStatus = Text("Loading available versions…", 12, false, "#ADBAB1"); form.Children.Add(versionStatus);
         var create = Button("Create pack", () => _ = Run("Creating pack…", async ct =>
         {
-            using var api = new HearthApi(host.Url, host.OwnerToken);
+            using var api = new HearthApi(host.Url, host.OwnerToken, certificatePin: host.CertificatePin);
             var created = await api.CreatePackAsync(new(name.Text.Trim(), mc.Text.Trim(), loader.SelectedItem!.ToString()!.ToLowerInvariant(), lv.Text.Trim()), ct);
             selectedHost = host; selectedPack = created; published = null; draft = new(); SaveDraft();
             ownerPackCache.Remove(host.Id); RenderEditor(); Status("Pack created. Add mods, then publish.");
@@ -200,7 +200,7 @@ public partial class MainWindow
     private async Task OpenEditor(PackSummary pack) => await Run("Opening pack…", async ct =>
     {
         ownerListRequest?.Cancel(); var host = selectedHost!;
-        using var api = new HearthApi(host.Url, host.OwnerToken);
+        using var api = new HearthApi(host.Url, host.OwnerToken, certificatePin: host.CertificatePin);
         var latestPack = (await api.ListPacksAsync(ct)).FirstOrDefault(p => p.Id == pack.Id) ?? throw new InvalidOperationException("This pack is no longer available to this owner.");
         var latest = latestPack.ReleaseId == null ? null : await api.ManifestAsync(pack.Id, ct);
         var path = DraftPath(host.Id, pack.Id);
@@ -282,9 +282,13 @@ public partial class MainWindow
     private void OpenOwnedPack()
     {
         var host = selectedHost!; var pack = selectedPack!;
-        var index = store.State.Packs.FindIndex(p => p.HostUrl == host.Url && p.PackId == pack.Id);
+        var localAlias = LocalHostIdentity.FindPinnedPack(store, host, pack.Id);
+        var index = store.State.Packs.FindIndex(p => p == localAlias || (p.PackId == pack.Id && (p.HostUrl == host.Url
+            || (host.CertificatePin is not null && p.CertificatePin is not null && host.HostId is not null
+                && host.CertificatePin.Equals(p.CertificatePin, StringComparison.OrdinalIgnoreCase) && host.HostId == p.HostId))));
         var joined = new JoinedPack(host.Url, pack.Id, pack.Name, host.OwnerToken, "owner",
-            index < 0 ? TerrainMode.Off : store.State.Packs[index].Terrain);
+            index < 0 ? TerrainMode.Off : store.State.Packs[index].Terrain, host.CertificatePin,
+            index < 0 ? null : store.State.Packs[index].InstallationUrl, host.HostId);
         // A host owner may already have joined through their own invitation.
         // Replace that pending/revoked credential without changing the instance.
         if (index < 0) store.State.Packs.Add(joined); else store.State.Packs[index] = joined;
@@ -293,7 +297,7 @@ public partial class MainWindow
     private async Task ResetDraft() => await Run("Loading the current release…", async ct =>
     {
         var host = selectedHost!; var pack = selectedPack!;
-        using var api = new HearthApi(host.Url, host.OwnerToken);
+        using var api = new HearthApi(host.Url, host.OwnerToken, certificatePin: host.CertificatePin);
         var latestPack = (await api.ListPacksAsync(ct)).FirstOrDefault(p => p.Id == pack.Id)
             ?? throw new InvalidOperationException("This pack is no longer available to this owner.");
         var latest = latestPack.ReleaseId == null ? null : await api.ManifestAsync(pack.Id, ct);
@@ -381,7 +385,7 @@ public partial class MainWindow
     private async Task PublishDraft() => await Run("Publishing changes…", async ct =>
     {
         var host = selectedHost!;
-        using var api = new HearthApi(host.Url, host.OwnerToken); var pack = selectedPack!;
+        using var api = new HearthApi(host.Url, host.OwnerToken, certificatePin: host.CertificatePin); var pack = selectedPack!;
         if (await RefreshStaleDraft(api, pack, ct)) return;
         foreach (var item in draft!.Files.Where(f => f.LocalPath != null).DistinctBy(f => f.File.Sha256))
         { Status("Uploading " + FileName(item.File) + "…"); await api.UploadAsync(pack.Id, item.LocalPath!, item.File, null, ct); }
@@ -413,7 +417,7 @@ public partial class MainWindow
     private async Task ShowMembers() => await Run("Loading members…", async ct =>
     {
         var host = selectedHost!; var pack = selectedPack!;
-        using var api = new HearthApi(host.Url, host.OwnerToken);
+        using var api = new HearthApi(host.Url, host.OwnerToken, certificatePin: host.CertificatePin);
         var members = await api.MembersAsync(pack.Id, ct);
         var admin = await IsHostAdministrator(host, ct); ownerAdminCache[host.Id] = admin;
         RenderMembers(members, admin); Status("Members loaded.");
@@ -421,14 +425,32 @@ public partial class MainWindow
     private void RenderMembers(List<MemberInfo> members, bool administrator)
     {
         PackEditorHeader("members"); var pack = selectedPack!; var host = selectedHost!;
-        var local = new Uri(host.Url).IsLoopback;
-        var invite = Card("Invite players", local ? "This host address only works on this PC. Add its public HTTPS address in Hosting before sharing with friends." : "Each person who uses this link still needs your approval.");
-        invite.Children.Add(Row(Button(local ? "Copy local test invite" : "Copy invite", () =>
+        var endpoint = GetSharingEndpoint(host);
+        var internet = GetPublicSharingEndpoint(host);
+        var lan = GetLanSharingEndpoint(host);
+        var invite = Card("Invite players", GetSharingDescription(host));
+        invite.Children.Add(Text("Each person who uses an invite still needs your approval.", 12, false, "#ADBAB1"));
+        void CopyInvite(Func<HostLink?> resolve, string message)
         {
-            Clipboard.SetText(new Invite(host.Url, pack.Id, pack.InviteCode).ToString());
-            Status(local ? "Local test invite copied. It only works on this PC." : "Invite copied.");
-        }), local ? Button("Open Hosting", ShowHosts, true) : Button("Refresh requests", () => _ = ShowMembers(), true)));
-        if (local) invite.Children.Add(Row(Button("Refresh requests", () => _ = ShowMembers(), true)));
+            var link = resolve();
+            if (link is null)
+            {
+                ShowHosts(); Status("The host connection changed. Retry connection setup before copying this invite."); return;
+            }
+            Clipboard.SetText(new Invite(link.HostUrl, pack.Id, pack.InviteCode, link.CertificatePin, link.HostId).ToString());
+            Status(message);
+        }
+        var actions = Row();
+        if (internet is not null)
+            actions.Children.Add(Button("Copy internet invite", () => CopyInvite(() => GetPublicSharingEndpoint(host), "Internet invite copied. The first connection from a friend's network confirms reachability.")));
+        if (lan is not null)
+            actions.Children.Add(Button("Copy same-network invite", () => CopyInvite(() => GetLanSharingEndpoint(host), "Invite copied for friends on the same network."), internet is not null));
+        if (internet is null && lan is null && endpoint is not null && !new Uri(endpoint.HostUrl).IsLoopback)
+            actions.Children.Add(Button("Copy invite", () => CopyInvite(() => GetSharingEndpoint(host), "Invite copied.")));
+        if (endpoint is null || new Uri(endpoint.HostUrl).IsLoopback)
+            actions.Children.Add(Button("Set up hosting", ShowHosts));
+        actions.Children.Add(Button("Refresh requests", () => _ = ShowMembers(), true));
+        invite.Children.Add(actions);
         var pending = members.Where(x => x.Status == "pending").ToList();
         var approved = members.Where(x => x.Status == "approved").ToList();
         if (pending.Count == 0 && approved.Count == 0) { Card("No members yet", "Share the invite. New requests will appear here."); return; }
@@ -468,7 +490,7 @@ public partial class MainWindow
     }
     private async Task ChangeMember(MemberInfo member, string status, string role) => await Run("Updating access…", async ct =>
     {
-        var host = selectedHost!; using var api = new HearthApi(host.Url, host.OwnerToken);
+        var host = selectedHost!; using var api = new HearthApi(host.Url, host.OwnerToken, certificatePin: host.CertificatePin);
         await api.UpdateMemberAsync(selectedPack!.Id, member.Id, new(status, role), ct);
         var members = await api.MembersAsync(selectedPack.Id, ct);
         RenderMembers(members, ownerAdminCache.GetValueOrDefault(host.Id)); Status("Access updated.");

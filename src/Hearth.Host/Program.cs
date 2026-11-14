@@ -15,6 +15,8 @@ if (arguments.Initialize)
     return;
 }
 using var store = new HostStore(arguments);
+using var hostCertificate = arguments.HttpsPort is null ? null : HostCertificate.LoadOrCreate(arguments.Data);
+if (arguments.HttpsPort == (arguments.Port ?? store.Settings.Port)) throw new ArgumentException("HTTP and HTTPS need different ports.");
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [], ContentRootPath = AppContext.BaseDirectory });
 builder.Services.AddWindowsService(options => options.ServiceName = "HearthHost");
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -28,6 +30,8 @@ builder.WebHost.ConfigureKestrel(options =>
     options.Limits.MaxRequestBodySize = HostStore.MaxBlobBytes;
     options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(15);
     options.Listen(IPAddress.Parse(arguments.Bind ?? store.Settings.Bind), arguments.Port ?? store.Settings.Port);
+    if (arguments.HttpsPort is int httpsPort)
+        options.Listen(IPAddress.Any, httpsPort, listener => listener.UseHttps(hostCertificate!));
 });
 builder.Services.AddRateLimiter(options =>
 {
@@ -72,7 +76,7 @@ app.MapGet("/health", () => new HealthResponse(store.Settings.Name, store.Settin
 app.MapGet("/owner/packs", (HttpContext context) => store.ListOwned(Bearer(context)));
 app.MapGet("/owner/status", (HttpContext context) => store.Status(Bearer(context)));
 app.MapPost("/owner/packs", (HttpContext context, CreatePackRequest request) => store.CreatePack(Bearer(context), request));
-app.MapGet("/packs/{id}/access", (HttpContext context, string id) => store.Access(id, Bearer(context)));
+app.MapGet("/packs/{id}/access", (HttpContext context, string id) => store.Access(id, Bearer(context), InternetPlayerRequest(context)));
 app.MapPost("/packs/{id}/join", (string id, JoinRequest request) => store.Join(id, request)).RequireRateLimiting("join");
 app.MapGet("/packs/{id}/members", (HttpContext context, string id) => store.Members(id, Bearer(context)));
 app.MapPatch("/packs/{id}/members/{memberId}", (HttpContext context, string id, string memberId, MemberUpdate request) => store.UpdateMember(id, memberId, Bearer(context), request));
@@ -80,7 +84,7 @@ app.MapDelete("/packs/{id}/invite", (HttpContext context, string id) => store.Ro
 app.MapGet("/packs/{id}/manifest", (HttpContext context, string id) =>
 {
     var manifest = store.Manifest(id, Bearer(context));
-    store.NotePlayerAccess(id, Bearer(context), "manifest");
+    store.NotePlayerAccess(id, Bearer(context), "manifest", InternetPlayerRequest(context));
     return manifest;
 });
 app.MapPut("/packs/{id}/blobs/{sha256}", async (HttpContext context, string id, string sha256) =>
@@ -91,7 +95,7 @@ app.MapPut("/packs/{id}/blobs/{sha256}", async (HttpContext context, string id, 
 app.MapGet("/packs/{id}/blobs/{sha256}", (HttpContext context, string id, string sha256) =>
 {
     var path = store.DownloadBlob(id, sha256, Bearer(context));
-    store.NotePlayerAccess(id, Bearer(context), "download");
+    store.NotePlayerAccess(id, Bearer(context), "download", InternetPlayerRequest(context));
     return Results.File(path, "application/java-archive", enableRangeProcessing: true);
 });
 app.MapPost("/packs/{id}/releases", (HttpContext context, string id, PublishRequest request) => store.Publish(id, Bearer(context), request));
@@ -102,6 +106,9 @@ if (launcherLifetime.IsManaged)
     await app.WaitForShutdownAsync(launcherLifetime.Stopping);
 }
 else await app.RunAsync();
+
+// Only the authenticated direct TLS peer is evidence. Forwarded headers are untrusted and ignored.
+static bool InternetPlayerRequest(HttpContext context) => HostNetworkAddress.ShouldConfirmInternet(context.Request.IsHttps, context.Connection.RemoteIpAddress);
 
 static string Bearer(HttpContext context)
 {

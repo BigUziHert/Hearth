@@ -1,6 +1,10 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.Security;
+using System.Runtime.CompilerServices;
+using System.Security.Authentication;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace Hearth.Core;
@@ -15,17 +19,64 @@ public sealed class HearthApi : IDisposable
     private readonly HttpClient _client;
     private readonly bool _ownsClient;
     private readonly string? _token;
+    private sealed record ClientTrust(string? Pin);
+    private sealed class HostIdentityException(string message) : AuthenticationException(message);
+    private sealed class HttpsOnlyHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.Scheme != "https") throw new AuthenticationException("A pinned host connection requires HTTPS. No access credentials were sent.");
+            try { return await base.SendAsync(request, cancellationToken).ConfigureAwait(false); }
+            catch (HttpRequestException exception)
+            {
+                for (Exception? cause = exception; cause is not null; cause = cause.InnerException)
+                    if (cause is HostIdentityException)
+                        throw new HttpRequestException(cause.Message, exception, exception.StatusCode);
+                throw;
+            }
+        }
+    }
+    private static readonly ConditionalWeakTable<HttpClient, ClientTrust> TrustedClients = new();
     public string HostUrl { get; }
-    public HearthApi(string hostUrl, string? token = null, HttpClient? client = null)
+    public HearthApi(string hostUrl, string? token = null, HttpClient? client = null, string? certificatePin = null)
     {
         HostUrl = NormalizeHost(hostUrl);
+        var pin = certificatePin is null ? null : HostCertificate.NormalizePin(certificatePin);
+        if (pin is not null && !HostUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("A host certificate identity requires HTTPS. Reconnect using the owner's current host connection link.");
+        if (pin is not null && client is not null && (!TrustedClients.TryGetValue(client, out var trust) || trust.Pin != pin))
+            throw new ArgumentException("Create a pinned HTTP client with HearthApi.CreateClient before supplying it to HearthApi.");
         _token = token;
         _ownsClient = client is null;
-        _client = client ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(15) };
+        _client = client ?? CreateClient(pin);
+    }
+
+    public static HttpClient CreateClient(string? certificatePin = null, TimeSpan? timeout = null)
+    {
+        var pin = certificatePin is null ? null : HostCertificate.NormalizePin(certificatePin);
+        var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        if (pin is not null)
+        {
+            var expected = Convert.FromHexString(pin);
+            handler.ServerCertificateCustomValidationCallback = (request, certificate, _, errors) =>
+            {
+                if (request.RequestUri?.Scheme != "https" || certificate is null || (errors & SslPolicyErrors.RemoteCertificateNotAvailable) != 0)
+                    throw new HostIdentityException("The host did not provide its HTTPS certificate. No access credentials were sent.");
+                if (!CryptographicOperations.FixedTimeEquals(expected, certificate.GetCertHash(HashAlgorithmName.SHA256)))
+                    throw new HostIdentityException("The host certificate identity changed or does not match this invite. Ask the owner for a fresh link. No access credentials were sent.");
+                if (certificate.NotBefore.ToUniversalTime() > DateTime.UtcNow || certificate.NotAfter.ToUniversalTime() <= DateTime.UtcNow)
+                    throw new HostIdentityException("The host certificate is expired or not yet valid. Check the host and player PC clocks. No access credentials were sent.");
+                // The invite's exact certificate is the trust anchor; DNS names and public CA trust are not needed.
+                return true;
+            };
+        }
+        var client = new HttpClient(pin is null ? handler : new HttpsOnlyHandler(handler)) { Timeout = timeout ?? TimeSpan.FromMinutes(15) };
+        TrustedClients.Add(client, new(pin));
+        return client;
     }
     public static string NormalizeHost(string value)
     {
-        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) || (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback)) || uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0)
+        if (value is null || value.Length > 2048 || value.Any(char.IsControl) || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) || (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback)) || uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0)
             throw new ArgumentException("Use an HTTPS host address. HTTP is allowed only for localhost on this PC.");
         return uri.ToString().TrimEnd('/');
     }

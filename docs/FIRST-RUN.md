@@ -2,7 +2,7 @@
 
 ## Join and play
 
-1. Install `Hearth-Setup-1.0.9-win-x64.exe` and open Hearth.
+1. Install `Hearth-Setup-1.0.10-win-x64.exe` and open Hearth.
 2. Select **Add modpack**, paste your friend's `hearth://join?...` invite, enter the name they know you by, and select **Request access**. You can also open an invite directly after installing Hearth.
 3. Select the pack in the sidebar. Open **⋯ → Member details & fingerprint** and tell the owner your name and fingerprint so they approve the correct request. Select **Check approval** after they approve you.
 4. The main button becomes **Set up Prism** if Minecraft setup is needed. Hearth downloads and verifies the official portable Windows launcher. Finish Prism's first-run wizard, then use **Settings → Accounts → Add Microsoft** inside Prism. Sign in with your own account that owns Minecraft Java and let Prism configure Java. You can reopen Prism from Hearth's **Settings → Open Prism**.
@@ -24,40 +24,25 @@ You can turn either option off here. If this PC hosts packs, hosting continues w
 
 ## Host from your always-on Windows PC
 
-1. Install the same Hearth installer on the server PC. Open **Hosting → Host on this PC → Enable hosting**. Fresh hosting does not require administrator permission. Keep Hearth open or enable **Settings → Startup & closing → Close to system tray**. Use **Quit Hearth** whenever you want to stop hosting completely.
-2. Return to **Hosting** and confirm that hosting is running. The local host listens on `http://127.0.0.1:17842`; keep the Minecraft world server on its existing port. To resume hosting after a reboot, enable **Start Hearth with Windows** and sign in to Windows.
-3. Expand the local connection's **Connection options**, select **Copy owner key**, and save it securely. Use that key on your main PC to administer the host. Ordinary players get invites, never the owner key.
-4. Give the host a stable HTTPS address using one of the choices below. In **Hosting → Connect an existing host**, enter that address and the owner key you copied, then select **Connect**. Use the public connection when sharing invites. A local test invite works only on the host PC.
+1. Install the same Hearth installer on the server PC. Open **Hosting → Host on this PC → Enable hosting**. Approve the Windows permission prompt so Hearth can allow its secure hosting port through the firewall. Canceling leaves hosting disabled and does not add a broken connection. You can retry without recovering or entering an owner key.
+2. Hearth creates its HTTPS identity, finds this PC's network address, and attempts automatic router setup. No tunnel, domain, reverse proxy, or certificate installation is required. Keep Hearth open or enable **Settings → Startup & closing → Close to system tray**. **Quit Hearth** stops both local and secure hosting.
+3. The **This PC** card shows **On your home network** and, when router setup succeeds, an **Internet address**. These addresses are filled in by Hearth. **Copy home network link** is for another PC on the same network; **Copy host connection link** under the Internet address is for your remote management PC. Copy the **owner key** separately from **Connection options**. Players get pack invites instead of either owner credential.
+4. On your main PC, open or paste that connection link under **Hosting → Connect an existing host**, paste the owner key, and select **Connect**. The link includes the host's certificate identity; a plain address does not contain that information. Each connection checks the host before sending credentials.
+5. To resume after a reboot, enable **Start Hearth with Windows** and sign in to Windows. Hosting resumes with the app. Startup never opens an administrator prompt. If an older install has not granted the firewall permission yet, open **Hosting → Retry connection setup** once and approve Windows.
 
-### A stable tunnel, without router changes
+Hearth uses local management port **17842** and its own encrypted sharing port **17843** by default. It does not take port 443 from MC Server UI or change the Minecraft world server. Changing the local management port in a development profile also changes sharing to the next port.
 
-One option is [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel). Install/sign into Tailscale on the server PC and enable its Windows **Run unattended** setting so it remains connected before login. Open an Administrator PowerShell, then run:
+### If automatic Internet setup cannot finish
 
-```powershell
-tailscale funnel --bg 17842
-tailscale funnel status
-```
+Hearth keeps home-network sharing available and explains what it could not configure. **Retry connection setup** rechecks Windows and the router and briefly restarts hosting. Some routers disable automatic port mapping; another router or the Internet provider may also prevent incoming connections. Hearth cannot create an inbound route through an uncooperative network. Ask your Internet provider whether your connection has a public address and permits incoming connections. This version does not include an operated relay service. It does not send users through manual tunnel or proxy setup.
 
-Follow Tailscale's account approval steps for Funnel/HTTPS and copy the resulting `https://...ts.net` address into Hearth. Friends use the public address; they do not need the Tailscale client for Funnel. `--bg` keeps the forwarding configuration in the background. The [Funnel command reference](https://tailscale.com/docs/reference/tailscale-cli/funnel) describes status and turning it off.
+Automatic setup tries NAT-PMP and UPnP, changes only its own mapping, and renews it while Hearth runs. Normal shutdown removes the owned mapping. A finite mapping expires after a crash. Some routers only support permanent mappings; if Hearth crashes those may remain until a subsequent normal stop or router cleanup, but no Hearth host process continues serving files after the app exits. The narrowly scoped firewall rule remains available for later launches.
 
-### Your own domain and router
+### Confirm a friend can connect
 
-1. Point a DNS hostname you own, such as `packs.example.net`, at your public IP. Reserve the host PC's LAN address in your router.
-2. Install [Caddy](https://caddyserver.com/docs/quick-starts/https) on the server and forward TCP ports **80 and 443** from the router to that PC. Allow Caddy through Windows Firewall on those ports. Do not expose Hearth's raw HTTP port to the internet.
-3. Run this initial check in a terminal (replace the example hostname):
+A successful router setup is not proof of Internet reachability. Have a friend on a different network install Hearth, open an **Internet invite** for a pack, request access, get approved, and press **Play**. **Hosting → Check connection** reports the last approved player's request and separately records a confirmed outside connection when one arrives directly over HTTPS from a public IPv4 address; confirm with that friend that the download finished. A request from a PC on your home network does not prove outside access. Browser visits to a built-in host address are not the test: Hearth trusts the exact certificate inside the connection link rather than installing public browser trust.
 
-```powershell
-caddy reverse-proxy --from packs.example.net --to 127.0.0.1:17842
-```
-
-4. Configure Caddy to start automatically as a Windows service or startup task using its Windows installation guidance. Closing a foreground Caddy terminal stops that forwarding process. Hearth itself must remain open or in the tray to serve packs.
-5. Use `https://packs.example.net` in Hearth. Caddy handles certificates and forwards requests to the local host. If your ISP uses carrier-grade NAT, inbound port forwarding may not work; use a tunnel or obtain a reachable public address.
-
-The public endpoint must preserve Authorization headers, allow PUT/POST and up to 512 MB JAR uploads, and avoid caching private API responses. A proxy's upload limit or timeout can block larger mods.
-
-## Check actual outside access
-
-**Running locally** is not proof that a friend can connect. On a phone with Wi-Fi disabled, open `https://YOUR-HOST/health`; it should return JSON identifying Hearth. Then have a friend on a different network install Hearth, request a pack, get approved, and press Play. Use **Hosting → Check connection** for the last successful player connection. That timestamp proves a player authenticated; confirm with the friend that their download completed. Finally reboot the host PC, sign in, and repeat this check after Hearth has started to verify your startup and tunnel/proxy settings. Quit Hearth and confirm the endpoint stops responding; reopen Hearth to resume hosting.
+Quit Hearth and confirm that your friend can no longer refresh or download from the host; reopening it resumes hosting. Test again after rebooting the PC and signing in. If the Internet provider changes your public IP, use **Retry connection setup**, copy a fresh invite or host connection link, and send it to existing users. A fresh link for the same verified host reconnects an existing pack while preserving its Minecraft instance, approval, and terrain preference. There is no background address directory or automatic DNS service in this version.
 
 ## Create, publish, and share
 
@@ -65,10 +50,10 @@ The public endpoint must preserve Authorization headers, allow PUT/POST and up t
 2. On the **Mods** tab, add or drag in JARs, including custom builds. Select an existing file to **Replace** or **Remove** it. The published release stays unchanged while you edit.
 3. Always-required mods belong in **Base**. Under **Optional terrain mods**, **Add Voxy** and **Add Distant Horizons** fetch matching Modrinth versions and required dependencies. **Choose .jar files** lets you supply tested JARs manually. Put dependencies also needed by the pack in Base so switching Off keeps them. Test exact versions together before publishing; catalog matching and valid hashes do not prove game compatibility.
 4. Select **Review & publish** at the top of the pack editor, inspect added/replaced/removed files, then **Publish**. The host makes a release visible only after every referenced upload is verified.
-5. Open **Members → Copy invite** and share it. If the connection is localhost, Hearth instead offers **Copy local test invite** and **Open Hosting**; connect your public HTTPS address before inviting outside friends. Use **Refresh requests**, compare fingerprints, and **Approve** each friend. Every pack has separate approvals; a forwarded link grants no downloads.
+5. Open **Members** and select **Copy internet invite** for outside friends or **Copy same-network invite** for someone on the same network. If sharing is not ready, use **Set up hosting** to finish setup. Use **Refresh requests**, compare fingerprints, and **Approve** each friend. Every pack has separate approvals; a forwarded link grants no downloads.
 6. **Remove** blocks a person's future authorized downloads. **Make owner** allows that person to publish and manage this pack. Owners can open **⋯ → Manage as owner** from their joined pack.
 
-To manage from your main PC, install Hearth there and use **Hosting → Connect an existing host**, entering the server's public HTTPS address and owner key. You can host multiple packs, connect other hosts, and use **Open in my library** to play your own packs. Publish from one PC at a time. If someone publishes a newer release while you are editing, Hearth keeps your draft and asks you to discard it before starting from the current release. Use the same host address consistently when playing a pack; localhost and public-address connections have separate local instances.
+To manage from your main PC, install Hearth there and use **Hosting → Connect an existing host**, pasting the host connection link and owner key copied from the server PC. You can host multiple packs, connect other hosts, and use **Open in my library** to play your own packs. Publish from one PC at a time. If someone publishes a newer release while you are editing, Hearth keeps your draft and asks you to discard it before starting from the current release. Refreshed links for the same verified host preserve the existing local instance. A changed certificate identity is blocked; check with the owner before removing a saved connection.
 
 ## Update Hearth itself
 

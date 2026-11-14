@@ -49,6 +49,12 @@ internal static class Program
             CheckWindows(Path.Combine(taskRoot, "windows"));
             OwnerFlowChecks.Run(Path.Combine(taskRoot, "owner-flow"), Check, Await);
             HostingMigrationFlowChecks.Run(Path.Combine(taskRoot, "migration-flow"), Check);
+            var clientIdentity = ClientIdentityChecks.RunAsync(Path.Combine(taskRoot, "client-identity"), Check);
+            Await(() => clientIdentity.IsCompleted, "Secure invite reconnection scenarios complete");
+            clientIdentity.GetAwaiter().GetResult();
+            var networkChecks = HostNetworkChecks.RunAsync(Check);
+            Await(() => networkChecks.IsCompleted, "Automatic network setup scenarios complete");
+            networkChecks.GetAwaiter().GetResult();
             Console.WriteLine($"PASS: {checks} profile and WPF component checks.");
         }
         finally { app.Shutdown(); Directory.Delete(taskRoot, recursive: true); }

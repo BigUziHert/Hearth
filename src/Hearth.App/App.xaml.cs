@@ -78,9 +78,10 @@ public partial class App : Application
     }
     protected virtual AppLocalHost CreateLocalHost(ProfileStore store) => new(store.Root,
         port: store.State.LocalHostingPort,
-        dataDirectory: string.IsNullOrWhiteSpace(store.State.LocalHostDataDirectory) ? null : store.State.LocalHostDataDirectory);
+        dataDirectory: string.IsNullOrWhiteSpace(store.State.LocalHostDataDirectory) ? null : store.State.LocalHostDataDirectory,
+        httpsPort: store.State.LocalHostingPort == 65535 ? 17843 : store.State.LocalHostingPort + 1);
 
-    public async Task<HostConnection> EnableHostingAsync(CancellationToken cancellationToken = default)
+    public async Task<HostConnection> EnableHostingAsync(CancellationToken cancellationToken = default, bool interactive = true)
     {
         if (hostingSetupError != null) throw new InvalidOperationException(hostingSetupError);
         if (profile == null || LocalHost == null || IsExiting) throw new InvalidOperationException("Hearth is closing.");
@@ -90,7 +91,7 @@ public partial class App : Application
             if (LegacyHostingMigration.ServiceInstalled())
                 throw new InvalidOperationException("An older Hearth Windows service is installed. Run the latest Hearth installer to migrate it before enabling hosting.");
             return await LocalHostingSetup.EnableAsync(profile, LocalHost.HostUrl, LocalHost.DataDirectory,
-                LocalHost.StartAsync, cancellationToken);
+                (key, ct) => LocalHost.StartAsync(key, interactive, ct), cancellationToken, () => LocalHost.HostId);
         }
         catch (Exception exception)
         {
@@ -98,6 +99,13 @@ public partial class App : Application
             HostingError = exception is OperationCanceledException ? "Hosting startup was canceled. Retry to start hosting." : exception.Message;
             throw;
         }
+    }
+
+    public async Task RetryHostNetworkAsync(CancellationToken cancellationToken = default)
+    {
+        if (LocalHost == null || profile == null || IsExiting) throw new InvalidOperationException("Hearth is closing.");
+        await LocalHost.StopAsync();
+        await EnableHostingAsync(cancellationToken);
     }
 
     public async Task DisableHostingAsync()

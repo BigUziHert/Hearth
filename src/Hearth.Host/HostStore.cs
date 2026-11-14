@@ -17,7 +17,8 @@ public sealed record StoredMember(string Id, string DisplayName, string Status, 
     public MemberInfo Info() => new(Id, DisplayName, Status, Role, TokenHash[..12], RequestedAt);
 }
 public sealed record PackState(PackSummary Pack, List<StoredMember> Members);
-public sealed record HostStatus(DateTimeOffset StartedAt, DateTimeOffset? LastPlayerAccessAt, string? LastPlayerName, string? LastPackName, string? LastOperation, long SuccessfulPlayerRequests);
+public sealed record HostStatus(DateTimeOffset StartedAt, DateTimeOffset? LastPlayerAccessAt, string? LastPlayerName, string? LastPackName, string? LastOperation,
+    long SuccessfulPlayerRequests, DateTimeOffset? LastInternetPlayerAccessAt = null, string? LastInternetPlayerName = null);
 
 public sealed partial class HostStore : IDisposable
 {
@@ -84,7 +85,7 @@ public sealed partial class HostStore : IDisposable
         }
     }
 
-    public void NotePlayerAccess(string id, string token, string operation)
+    public void NotePlayerAccess(string id, string token, string operation, bool internet = false)
     {
         lock (gate)
         {
@@ -92,7 +93,13 @@ public sealed partial class HostStore : IDisposable
             var hash = HashToken(token);
             var member = state.Members.SingleOrDefault(x => EqualsHash(x.TokenHash, hash) && x.Status == "approved");
             if (member is not null)
-                status = status with { LastPlayerAccessAt = DateTimeOffset.UtcNow, LastPlayerName = member.DisplayName, LastPackName = state.Pack.Name, LastOperation = operation, SuccessfulPlayerRequests = status.SuccessfulPlayerRequests + 1 };
+            {
+                var time = DateTimeOffset.UtcNow;
+                status = status with { LastPlayerAccessAt = time, LastPlayerName = member.DisplayName, LastPackName = state.Pack.Name,
+                    LastOperation = operation, SuccessfulPlayerRequests = status.SuccessfulPlayerRequests + 1,
+                    LastInternetPlayerAccessAt = internet ? time : status.LastInternetPlayerAccessAt,
+                    LastInternetPlayerName = internet ? member.DisplayName : status.LastInternetPlayerName };
+            }
         }
     }
 
@@ -127,7 +134,7 @@ public sealed partial class HostStore : IDisposable
         }
     }
 
-    public AccessResponse Access(string id, string token)
+    public AccessResponse Access(string id, string token, bool internet = false)
     {
         lock (gate)
         {
@@ -136,7 +143,7 @@ public sealed partial class HostStore : IDisposable
             if (IsAdmin(hash)) return new("approved", "owner", state.Pack.Name);
             var member = state.Members.SingleOrDefault(x => EqualsHash(x.TokenHash, hash));
             if (member is null) throw new HostException(403, "Access was removed. Ask the pack owner for a new invitation.");
-            if (member.Status == "approved") NotePlayerAccess(id, token, "access check");
+            if (member.Status == "approved") NotePlayerAccess(id, token, "access check", internet);
             return new(member.Status, member.Role, state.Pack.Name);
         }
     }

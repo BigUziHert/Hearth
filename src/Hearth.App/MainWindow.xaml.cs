@@ -117,7 +117,7 @@ public partial class MainWindow : Window
             busy = false; operation.Dispose(); operation = null; MainContent.IsEnabled = SidebarPanel.IsEnabled = true;
             Progress.Visibility = CancelButton.Visibility = Visibility.Collapsed;
             operationFinished.TrySetResult(); operationFinished = null;
-            if (inviteQueued && !exitRequested) { inviteQueued = false; ShowAddPack(); }
+            if (inviteQueued && !exitRequested) { inviteQueued = false; ShowIncomingLink(); }
         }
     }
     public async void RequestQuit()
@@ -138,13 +138,26 @@ public partial class MainWindow : Window
     private void Settings_Click(object sender, RoutedEventArgs e) => ShowSettings();
     private void Cancel_Click(object sender, RoutedEventArgs e) => operation?.Cancel();
     private void SetupPrism_Click(object sender, RoutedEventArgs e) => _ = InstallPrism();
-    public void OpenInvite(string value) { pendingInvite = value; if (!busy) ShowAddPack(); else { inviteQueued = true; Status("Your invite will open when the current operation finishes."); } }
+    public void OpenInvite(string value)
+    {
+        pendingInvite = value;
+        if (!busy) ShowIncomingLink();
+        else { inviteQueued = true; Status("Your link will open when the current operation finishes."); }
+    }
+    private void ShowIncomingLink()
+    {
+        if (Uri.TryCreate(pendingInvite, UriKind.Absolute, out var uri) && uri.Scheme == "hearth" && uri.Host == "host")
+        {
+            pendingHostLink = pendingInvite; pendingInvite = ""; ShowHosts();
+        }
+        else ShowAddPack();
+    }
     private string? AvailablePrismExe() => File.Exists(store.State.PrismExecutable) ? store.State.PrismExecutable : prism.FindExecutable();
     private string PrismExe() => AvailablePrismExe() ?? throw new InvalidOperationException("Set up Prism using the button below the pack or in Settings.");
     private async Task Play(JoinedPack original) => await Run("Checking this pack's latest release…", async ct =>
     {
         packStatusCancellation?.Cancel(); var exe = PrismExe(); var pack = store.State.Packs.First(p => p.PackId == original.PackId && p.HostUrl == original.HostUrl);
-        using var api = new HearthApi(pack.HostUrl, pack.Token);
+        using var api = new HearthApi(pack.HostUrl, pack.Token, certificatePin: pack.CertificatePin);
         try
         {
             var result = await sync.SyncAsync(api, pack, new Progress<SyncProgress>(p => { Status(p.Message); if (activePage == "library" && IsSelected(pack)) SetPackStatus(p.Message, "#D6BE70"); }), ct);

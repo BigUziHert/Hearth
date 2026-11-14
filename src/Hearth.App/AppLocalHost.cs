@@ -14,6 +14,7 @@ public sealed class AppLocalHost : IDisposable
     private readonly string profileRoot;
     private readonly string executablePath;
     private readonly int port;
+    private readonly int? httpsPort;
     private readonly object stateLock = new();
     private readonly SemaphoreSlim operation = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
@@ -22,23 +23,32 @@ public sealed class AppLocalHost : IDisposable
     private bool disposed;
     private string? lastError;
 
-    public AppLocalHost(string profileRoot, string? executablePath = null, int port = 17842, string? dataDirectory = null)
+    public AppLocalHost(string profileRoot, string? executablePath = null, int port = 17842, string? dataDirectory = null,
+        int? httpsPort = null, IHostNetworkPlatform? networkPlatform = null)
     {
         if (port is < 1024 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         this.profileRoot = Path.GetFullPath(profileRoot);
         this.executablePath = Path.GetFullPath(executablePath ?? Path.Combine(AppContext.BaseDirectory, "host", "Hearth.Host.exe"));
         this.port = port;
+        if (httpsPort is < 1024 or > 65535 || httpsPort == port) throw new ArgumentOutOfRangeException(nameof(httpsPort));
+        this.httpsPort = httpsPort;
         DataDirectory = Path.GetFullPath(string.IsNullOrWhiteSpace(dataDirectory) ? Path.Combine(this.profileRoot, "Host") : dataDirectory);
         HostUrl = $"http://127.0.0.1:{port}";
+        if (httpsPort.HasValue) Network = new HostNetworkSetup(this.profileRoot, this.executablePath, httpsPort.Value, networkPlatform);
     }
 
     public string DataDirectory { get; }
     public string HostUrl { get; }
+    public string? HostId { get; private set; }
+    public string? CertificatePin { get; private set; }
+    public HostNetworkSetup? Network { get; }
     public bool IsRunning { get { lock (stateLock) return ready && child?.IsRunning == true; } }
     public int? ProcessId { get { lock (stateLock) return child?.IsRunning == true ? child.Id : null; } }
     public string? LastError { get { lock (stateLock) return lastError ?? (ready && child?.IsRunning != true ? "Hosting stopped. Start hosting again." : null); } }
 
-    public async Task StartAsync(string ownerToken, CancellationToken cancellationToken = default)
+    public Task StartAsync(string ownerToken, CancellationToken cancellationToken = default) => StartAsync(ownerToken, true, cancellationToken);
+
+    public async Task StartAsync(string ownerToken, bool interactive, CancellationToken cancellationToken = default)
     {
         await operation.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -68,8 +78,20 @@ public sealed class AppLocalHost : IDisposable
                 var identity = JsonSerializer.Deserialize<HostIdentity>(await File.ReadAllTextAsync(settingsPath, ct).ConfigureAwait(false), JsonDefaults.Options);
                 if (string.IsNullOrWhiteSpace(identity?.HostId))
                     throw new IOException("The local host's saved identity could not be read. Its files have been preserved.");
-
-                var running = StartChild(["--data", DataDirectory, "--port", port.ToString()]);
+                HostId = identity.HostId;
+                var arguments = new List<string> { "--data", DataDirectory, "--port", port.ToString(), "--bind", "127.0.0.1" };
+                if (Network != null && httpsPort.HasValue)
+                {
+                    using var certificate = HostCertificate.LoadOrCreate(DataDirectory);
+                    CertificatePin = HostCertificate.GetPin(certificate);
+                    // A canceled Windows permission prompt happens before any saved host
+                    // entry is added. Startup never opens that prompt without a click.
+                    stopping.CancelAfter(Timeout.InfiniteTimeSpan);
+                    var network = await Network.PrepareAsync(HostId, interactive, ct).ConfigureAwait(false);
+                    if (network.FirewallReady) arguments.AddRange(["--https-port", httpsPort.Value.ToString()]);
+                }
+                stopping.CancelAfter(TimeSpan.FromSeconds(25));
+                var running = StartChild(arguments);
                 // This signal comes from this exact child after Kestrel has bound its
                 // socket. A different process on the same port cannot impersonate it.
                 await running.WaitUntilListeningAsync(ct).ConfigureAwait(false);
@@ -79,6 +101,12 @@ public sealed class AppLocalHost : IDisposable
                 if (health.HostId != identity.HostId)
                     throw new IOException("A different host answered on this port. Hearth left it alone and stopped its own host.");
                 await api.ListPacksAsync(ct).ConfigureAwait(false);
+                if (arguments.Contains("--https-port"))
+                {
+                    using var secure = new HearthApi($"https://127.0.0.1:{httpsPort}", ownerToken, certificatePin: CertificatePin);
+                    if ((await secure.HealthAsync(ct).ConfigureAwait(false)).HostId != HostId)
+                        throw new IOException("The secure host returned an unexpected identity.");
+                }
                 ct.ThrowIfCancellationRequested();
                 lock (stateLock)
                 {
@@ -91,7 +119,8 @@ public sealed class AppLocalHost : IDisposable
             {
                 var failed = DetachChild();
                 if (failed is not null) await failed.StopAsync().ConfigureAwait(false);
-                var error = exception is OperationCanceledException && !cancellationToken.IsCancellationRequested && !lifetime.IsCancellationRequested
+                if (Network != null) await Network.StopAsync().ConfigureAwait(false);
+                var error = exception is OperationCanceledException && stopping.IsCancellationRequested && !cancellationToken.IsCancellationRequested && !lifetime.IsCancellationRequested
                     ? new IOException("The local host took too long to start. Its files are safe; try enabling hosting again.", exception)
                     : exception;
                 lock (stateLock) lastError = error.Message;
@@ -168,6 +197,7 @@ public sealed class AppLocalHost : IDisposable
         {
             var previous = DetachChild();
             if (previous is not null) await previous.StopAsync().ConfigureAwait(false);
+            if (Network != null) await Network.StopAsync().ConfigureAwait(false);
         }
         finally { operation.Release(); }
     }
@@ -185,6 +215,7 @@ public sealed class AppLocalHost : IDisposable
         }
         lifetime.Cancel();
         previous?.Dispose();
+        Network?.Dispose();
     }
 
     private sealed record HostIdentity(string HostId);

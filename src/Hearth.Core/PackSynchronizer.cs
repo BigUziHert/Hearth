@@ -107,7 +107,7 @@ public sealed class PackSynchronizer
     public async Task<SyncResult> SyncAsync(HearthApi api, JoinedPack pack, IProgress<SyncProgress>? progress = null, CancellationToken ct = default)
     {
         if (!api.HostUrl.Equals(HearthApi.NormalizeHost(pack.HostUrl), StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("The connection does not match this pack's host.");
-        var instance = GetInstanceDirectory(pack.HostUrl, pack.PackId);
+        var instance = GetInstanceDirectory(pack.InstallationUrl, pack.PackId);
         RejectLinks(Path.Combine(instance, ".hearth"));
         Directory.CreateDirectory(Path.Combine(instance, ".hearth"));
         RejectLinks(instance);
@@ -118,10 +118,10 @@ public sealed class PackSynchronizer
         var manifest = await api.ManifestAsync(pack.PackId, ct);
         if (manifest.PackId != pack.PackId || string.IsNullOrWhiteSpace(manifest.ReleaseId)) throw new InvalidDataException("The host returned metadata for a different pack.");
         var selected = ModFiles.Select(manifest, pack.Terrain).ToList();
-        var installed = GetInstalled(pack.HostUrl, pack.PackId);
+        var installed = GetInstalled(pack.InstallationUrl, pack.PackId);
         if (installed is not null)
         {
-            if (installed.PackId != pack.PackId || installed.HostUrl != HearthApi.NormalizeHost(pack.HostUrl)) throw new InvalidDataException(RecordRecovery);
+            if (installed.PackId != pack.PackId || installed.HostUrl != HearthApi.NormalizeHost(pack.InstallationUrl)) throw new InvalidDataException(RecordRecovery);
             foreach (var file in installed.Files) ModFiles.Validate(file);
         }
         var previous = (installed?.Files ?? []).ToDictionary(f => f.Path, StringComparer.OrdinalIgnoreCase);
@@ -166,7 +166,7 @@ public sealed class PackSynchronizer
             }
         }
         var versionJson = CreatePrismMetadata(manifest);
-        var newInstalled = new InstalledPack(HearthApi.NormalizeHost(pack.HostUrl), pack.PackId, manifest.ReleaseId, pack.Terrain, selected, manifest);
+        var newInstalled = new InstalledPack(HearthApi.NormalizeHost(pack.InstallationUrl), pack.PackId, manifest.ReleaseId, pack.Terrain, selected, manifest);
         ct.ThrowIfCancellationRequested();
         // Check again after network activity, in case the user opened Prism while downloads ran.
         PrismService.EnsureNotRunning(instance);
@@ -219,7 +219,7 @@ public sealed class PackSynchronizer
         // Failure to remove backup files after a durable commit does not undo the successful release.
         try { Directory.Delete(txn, true); } catch (IOException) { }
         progress?.Report(new("Ready to play", 1, 1));
-        return new(GetInstanceId(pack.HostUrl, pack.PackId), instance, downloads, removals.Count, manifest.ReleaseId);
+        return new(GetInstanceId(pack.InstallationUrl, pack.PackId), instance, downloads, removals.Count, manifest.ReleaseId);
     }
     private static string SanitizeIni(string value) => value.Replace('\r', ' ').Replace('\n', ' ').Replace('=', '-').Replace('[', '(').Replace(']', ')');
     public static byte[] CreatePrismMetadata(PackManifest manifest)
