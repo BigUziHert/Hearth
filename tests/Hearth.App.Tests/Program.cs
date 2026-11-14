@@ -38,6 +38,7 @@ internal static class Program
         XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
         var dictionary = new XElement(xaml + "ResourceDictionary", new XAttribute(XNamespace.Xmlns + "x", "http://schemas.microsoft.com/winfx/2006/xaml"), theme.Root!.Element(xaml + "Application.Resources")!.Elements());
         app.Resources = (ResourceDictionary)XamlReader.Parse(dictionary.ToString());
+        FluentScrollBars.Apply(app.Resources);
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
         try
         {

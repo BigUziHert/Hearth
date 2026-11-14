@@ -18,6 +18,7 @@ public partial class App : Application
         base.OnStartup(e);
         try
         {
+            FluentScrollBars.Apply(Resources);
             var index = Array.IndexOf(e.Args, "--profile");
             var root = index >= 0 && index + 1 < e.Args.Length ? e.Args[index + 1] : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Hearth");
             root = Path.GetFullPath(root);

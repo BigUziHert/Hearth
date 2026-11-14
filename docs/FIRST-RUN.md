@@ -2,7 +2,7 @@
 
 ## Join and play
 
-1. Install `Hearth-Setup-1.0.6-win-x64.exe` and open Hearth.
+1. Install `Hearth-Setup-1.0.7-win-x64.exe` and open Hearth.
 2. Select **Add modpack**, paste your friend's `hearth://join?...` invite, enter the name they know you by, and select **Request access**. You can also open an invite directly after installing Hearth.
 3. Select the pack in the sidebar. Open **⋯ → Member details & fingerprint** and tell the owner your name and fingerprint so they approve the correct request. Select **Check approval** after they approve you.
 4. The main button becomes **Set up Prism** if Minecraft setup is needed. Hearth downloads and verifies the official portable Windows launcher. Finish Prism's first-run wizard, then use **Settings → Accounts → Add Microsoft** inside Prism. Sign in with your own account that owns Minecraft Java and let Prism configure Java. You can reopen Prism from Hearth's **Settings → Open Prism**.
