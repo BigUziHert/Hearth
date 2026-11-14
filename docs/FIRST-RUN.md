@@ -70,5 +70,3 @@ Existing custom repositories remain unchanged. For a fork, **Settings → Advanc
 ## Stop or move hosting
 
 **Hosting → Host on this PC → Stop hosting** removes the Windows service registration and preserves the packs. Enabling again reuses the existing host data and your saved owner credential. Uninstalling only the launcher leaves the independent service running. Stop hosting before uninstalling if you want it offline. Back up `%PROGRAMDATA%\Hearth\Host` with the service stopped and retain your owner key before moving to another PC.
-
-

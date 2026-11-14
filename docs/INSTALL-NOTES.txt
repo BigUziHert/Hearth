@@ -9,4 +9,3 @@ Your Minecraft server is separate: Hearth hosts modpack files, not the shared wo
 An update or uninstall does not delete your personal Minecraft instances, Prism account data, or hosted pack data. Disable Hosting before uninstalling if you want the background service to stop.
 
 The short first-run guide is installed in the docs folder.
-

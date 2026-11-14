@@ -4,13 +4,23 @@ The automated test harness starts a real ASP.NET Hearth host on an unused loopba
 
 ## Version 1.0.2 navigation and updates
 
-The current integration suite passes **76 checks**, including ten new updater regressions: exact release-tag/installer matching, normalized version comparison, verified cache reuse, preservation of a valid cached installer after a failed replacement, checksum-file fallback, trusted repository origin, and the no-release state. The controlled updater fixture does not require a public release.
+The current integration suite passes **76 checks**, including ten new updater regressions: exact release-tag/installer matching, normalized version comparison, verified cache reuse, preservation of a valid cached installer after a failed replacement, checksum-file fallback, trusted repository origin, and the no-release state. The controlled updater fixture does not require a public release. The final full test report is `artifacts/verification/20261114-001910-90dc50/report.json`; logs are `artifacts/build-1.0.2-final.log` and `artifacts/host-security-1.0.2.log` (46 security checks). The final packaging log is `artifacts/build-1.0.2-release.log`.
 
 The separate WPF component suite passes **28 checks** against actual application controls and local HTTP fixtures. It covers encrypted profile migration to the official update source while preserving custom overrides, native window controls, empty-library joining, direct Hosting navigation, Settings defaults, pending/approved/removed/unpublished membership, Prism setup as the next action, per-pack terrain persistence, and the offline installed-copy action. It uses a test-only Application with the real theme resources and never invokes the production startup/profile handler. No Microsoft account or Minecraft process is launched by these tests.
 
 Off-screen renders of the real WPF content are available under `artifacts/screenshots/1.0.2-*.png`, including normal and minimum-size empty layouts, joining, Hosting, Settings, pending/approved packs, and the owner's Mods and Members pages. These are component renders without the operating system's title bar. An independent real-host owner harness also passed ten control-flow checks for pack loading, the split editor, staged changes, navigation back to drafts, and approval.
 
 The Windows release workflow builds and tests source, verifies installer/source/checksums, and publishes only after a matching version tag completes successfully. `scripts/verify-release.ps1` checks that the source archive excludes local profiles, build output, tools, credentials, and personal absolute paths. The official source is now `BigUziHert/Hearth`; actual Actions and public check/download/install verification are recorded separately after publishing.
+
+### Public release and installed updater verification
+
+The tagged GitHub Actions run [43533562242](https://github.com/BigUziHert/Hearth/actions/runs/43533562242) completed successfully, including the Windows build, tests, package verification, and stable release publication. The main-branch run also passed. The published release is [v1.0.2](https://github.com/BigUziHert/Hearth/releases/tag/v1.0.2).
+
+The production GithubUpdater checked the actual public repository as version 1.0.1, downloaded the published installer, verified its size and SHA-256, reused the verified cache, and executed the normal installer handoff. The installer returned exit code 0; the installed application changed from **1.0.1.0 to 1.0.2.0** and restarted as exactly one process. The encrypted normal profile remained byte-for-byte identical. A subsequent actual check at 1.0.2 reported no update available. In the installed app, clicking the footer's Check for updates automatically used Official Hearth releases and displayed **You're up to date**, without entering a repository.
+
+The distributed installer is the actual GitHub Actions artifact, copied back into the local artifacts directory: 83,603,325 bytes; SHA-256 `5540c35f66a352c65b0fcdd2da92a2d3ce943c647a243909fffcc4fa09ae0508`. The matching public source ZIP and SHA256SUMS.txt are beside it. The earlier local build is retained separately under `artifacts/local-package-1.0.2`.
+
+Live check/download/install JSON reports and the profile-preservation report are under `artifacts/live-update-probe`. Native maximize/restore, minimize/restore, and Close were exercised successfully; the app was reopened afterward. The actual installed update screen is captured in `artifacts/screenshots/1.0.2-installed-updates.jpg`. Component screenshots are identified separately above; they do not substitute for the installed-window check.
 
 ## Version 1.0.1 interface update
 
@@ -64,4 +74,3 @@ This exercised a local rebuild-to-rebuild update at version 1.0.0. Higher-versio
 The temporary default test profile was moved to `artifacts/install-smoke/profile-preserved-after-update` after verification. The installed app was reopened with a clean first-run profile; the synthetic background host was stopped. No permanent Windows host service was installed by these tests.
 
 Finally, the same verified installer was installed into the conventional `%LOCALAPPDATA%\Programs\Hearth` directory. The protocol handler and uninstall entry were checked against this location, and the clean installed app was left open there. The isolated installation and its evidence remain under artifacts.
-
