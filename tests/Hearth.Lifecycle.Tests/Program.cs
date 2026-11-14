@@ -1,9 +1,13 @@
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Text.Json;
 using System.Windows;
+using System.Windows.Markup;
 using System.Windows.Threading;
+using System.Xml.Linq;
 using Hearth.App;
+using Hearth.Core;
 using LauncherApp = Hearth.App.App;
 
 internal static class Program
@@ -20,11 +24,13 @@ internal static class Program
         Directory.CreateDirectory(taskRoot);
         try
         {
+            OwnedHostChecks.RunAsync(Path.Combine(taskRoot, "runtime"), Check).GetAwaiter().GetResult();
             foreach (var name in new[] { "normal-close", "tray-restore", "startup-tray", "startup-visible", "quit-busy", "session-ending" })
             {
                 var root = Path.Combine(taskRoot, name);
                 var profile = new ProfileStore(root);
                 profile.State.CloseToTray = name != "normal-close" && name != "startup-visible";
+                profile.State.LegacyHostingMigrated = true;
                 profile.Save();
                 var childArgs = new List<string> { "--scenario", name, "--profile", root };
                 if (name.StartsWith("startup-", StringComparison.Ordinal)) childArgs.Add("--startup");
@@ -35,7 +41,23 @@ internal static class Program
                 Console.Write(output.GetAwaiter().GetResult());
                 if (child.ExitCode != 0) throw new InvalidOperationException(name + ": " + errors.GetAwaiter().GetResult());
             }
-            Console.WriteLine("PASS: 6 isolated launcher lifecycle scenarios.");
+            foreach (var name in new[] { "host-window-close", "host-tray-quit", "host-startup-tray", "host-disabled", "host-persistence-first", "host-persistence-reopen", "host-persistence-disabled" })
+            {
+                var root = Path.Combine(taskRoot, name.StartsWith("host-persistence-", StringComparison.Ordinal) ? "host-persistence" : name);
+                if (name is not "host-persistence-reopen" and not "host-persistence-disabled") PrepareHostingProfile(root, name);
+                var childArgs = new List<string> { "--scenario", name, "--profile", root };
+                if (name == "host-startup-tray") childArgs.Add("--startup");
+                using var child = StartSelf(childArgs);
+                var output = child.StandardOutput.ReadToEndAsync();
+                var errors = child.StandardError.ReadToEndAsync();
+                if (!child.WaitForExit(40000)) { child.Kill(entireProcessTree: true); throw new TimeoutException(name + " did not exit."); }
+                Console.Write(output.GetAwaiter().GetResult());
+                if (child.ExitCode != 0) throw new InvalidOperationException(name + ": " + errors.GetAwaiter().GetResult());
+                var persisted = new ProfileStore(root);
+                Check(!OwnedHostChecks.PortOpenAsync(persisted.State.LocalHostingPort).GetAwaiter().GetResult(), name + ": the launcher exit closes the host listener");
+            }
+            CheckCrashCleanupAsync(Path.Combine(taskRoot, "host-crash")).GetAwaiter().GetResult();
+            Console.WriteLine("PASS: 14 isolated launcher lifecycle scenarios and app-owned host runtime checks.");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -55,10 +77,12 @@ internal static class Program
 
     private static int RunScenario(string scenario, string profileRoot)
     {
-        var app = new LauncherApp(); app.InitializeComponent();
+        var app = new FixtureApp();
         Exception? failure = null;
         var exerciseCompleted = false;
         var operationStopped = false;
+        int? ownedProcess = null;
+        string? ownedUrl = null;
         app.Exit += (_, _) =>
         {
             try
@@ -73,6 +97,12 @@ internal static class Program
             try
             {
                 var window = (MainWindow)app.MainWindow;
+                if (scenario.StartsWith("host-", StringComparison.Ordinal))
+                {
+                    exerciseCompleted = true; // Close can end the dispatcher before an await continuation runs.
+                    await ExerciseHostingAsync(scenario, profileRoot, app, window, (process, url) => { ownedProcess = process; ownedUrl = url; });
+                    return;
+                }
                 switch (scenario)
                 {
                     case "normal-close":
@@ -124,10 +154,174 @@ internal static class Program
             catch (Exception error) { failure = error; app.ExitApplication(); }
         }));
         app.Run();
+        if (ownedUrl != null)
+        {
+            try
+            {
+                OwnedHostChecks.AssertStoppedAsync(ownedUrl, ownedProcess).GetAwaiter().GetResult();
+                Check(true, scenario + ": exit disposes the owned host process and listener");
+            }
+            catch (Exception error) { failure = error; }
+        }
         if (failure != null) { Console.Error.WriteLine(failure); return 1; }
         if (!exerciseCompleted) { Console.Error.WriteLine("The lifecycle scenario did not run."); return 1; }
         Console.WriteLine($"PASS {scenario}: {checks} lifecycle checks");
         return 0;
+    }
+
+    private static void PrepareHostingProfile(string root, string scenario)
+    {
+        var profile = new ProfileStore(root);
+        profile.State.CloseToTray = scenario is "host-tray-quit" or "host-startup-tray" or "host-crash";
+        profile.State.LocalHostingEnabled = scenario != "host-disabled";
+        profile.State.LocalHostingPort = OwnedHostChecks.FreePort();
+        profile.State.LocalHostDataDirectory = Path.Combine(root, "Host");
+        profile.State.LegacyHostingMigrated = true;
+        profile.State.LocalHostOwnerToken = OwnedHostChecks.NewOwnerToken();
+        // Keep a previously registered connection even in the disabled fixture:
+        // saving the owner's pack access must not implicitly restart hosting.
+        if (scenario == "host-disabled")
+        {
+            profile.State.LocalHostConnectionId = "fixture-local";
+            profile.State.Hosts.Add(new("fixture-local", "This PC", "http://127.0.0.1:" + profile.State.LocalHostingPort, profile.State.LocalHostOwnerToken));
+        }
+        profile.Save();
+    }
+
+    private static async Task ExerciseHostingAsync(string scenario, string profileRoot, FixtureApp app, MainWindow window, Action<int?, string> captureHost)
+    {
+        var profile = new ProfileStore(profileRoot);
+        if (scenario is "host-disabled" or "host-persistence-disabled")
+        {
+            await Task.Delay(300);
+            Check(app.LocalHost?.IsRunning != true && !await OwnedHostChecks.PortOpenAsync(profile.State.LocalHostingPort),
+                "A saved connection with hosting disabled does not start a background host");
+            window.Close();
+            return;
+        }
+
+        var url = "http://127.0.0.1:" + profile.State.LocalHostingPort;
+        using var api = new HearthApi(url, profile.State.LocalHostOwnerToken);
+        await OwnedHostChecks.WaitUntilAsync(async () =>
+        {
+            if (app.LocalHost?.IsRunning != true) return false;
+            try { await api.HealthAsync(); return true; }
+            catch (System.Net.Http.HttpRequestException) { return false; }
+        }, "The launcher's enabled host did not start.");
+        captureHost(app.LocalHost!.ProcessId, app.LocalHost.HostUrl);
+        var identity = await api.HealthAsync();
+        await api.ListPacksAsync();
+        Check(true, scenario + ": the open launcher serves authenticated hosting requests");
+        // Allow the startup operation's final UI cleanup to complete before testing Close.
+        await OwnedHostChecks.WaitUntilAsync(() => Task.FromResult(((FrameworkElement)window.FindName("MainContent")).IsEnabled), "Startup hosting did not release the window.");
+        var saved = new ProfileStore(profileRoot);
+        Check(saved.State.Hosts.Single().OwnerToken == profile.State.LocalHostOwnerToken && saved.State.LocalHostingEnabled,
+            scenario + ": startup saves one verified local host and preserves the owner key");
+        switch (scenario)
+        {
+            case "host-window-close":
+                Check(window.IsVisible && !app.TrayAvailable, "Host is running with close-to-tray disabled");
+                window.Close();
+                break;
+            case "host-tray-quit":
+            case "host-startup-tray":
+                Check(app.TrayAvailable, "Hosting can use the real launcher tray icon");
+                if (scenario == "host-tray-quit") window.Close();
+                Check(!window.IsVisible && !app.IsExiting && (await api.HealthAsync()).HostId == identity.HostId,
+                    "A hidden launcher continues serving its host in the system tray");
+                await Activate(profileRoot, startup: false);
+                Check(window.IsVisible && (await api.HealthAsync()).HostId == identity.HostId,
+                    "Restoring the launcher keeps the same running host");
+                window.RequestQuit();
+                break;
+            case "host-persistence-first":
+                var pack = await api.CreatePackAsync(new("Remembered app pack", "1.21.1", "fabric", "0.16.10"));
+                await File.WriteAllTextAsync(Path.Combine(profileRoot, "expected-host.json"), JsonSerializer.Serialize(new ExpectedHost(identity.HostId, pack.Id, pack.InviteCode)));
+                window.RequestQuit();
+                break;
+            case "host-persistence-reopen":
+                var expected = JsonSerializer.Deserialize<ExpectedHost>(await File.ReadAllTextAsync(Path.Combine(profileRoot, "expected-host.json")))!;
+                var restored = (await api.ListPacksAsync()).Single();
+                Check(identity.HostId == expected.HostId && restored.Id == expected.PackId && restored.InviteCode == expected.Invite,
+                    "A new launcher process restores enabled hosting with the same owner, host, pack, and invite");
+                var stoppingProcess = app.LocalHost.ProcessId;
+                await app.DisableHostingAsync();
+                await OwnedHostChecks.AssertStoppedAsync(url, stoppingProcess);
+                var disabled = new ProfileStore(profileRoot);
+                Check(!disabled.State.LocalHostingEnabled && disabled.State.Hosts.Single() == saved.State.Hosts.Single()
+                    && disabled.State.LocalHostOwnerToken == saved.State.LocalHostOwnerToken,
+                    "Disabling hosting stops its listener and saves the preference while preserving the owner's connection and key");
+                window.RequestQuit();
+                break;
+            case "host-crash":
+                window.Close();
+                Check(!window.IsVisible && (await api.HealthAsync()).HostId == identity.HostId, "The crash fixture hosts from the tray");
+                Console.WriteLine("HOST_READY " + app.LocalHost.ProcessId);
+                Console.Out.Flush();
+                break; // The parent terminates only this launcher process.
+            default: throw new ArgumentException("Unknown hosting scenario.");
+        }
+    }
+
+    private static async Task CheckCrashCleanupAsync(string root)
+    {
+        PrepareHostingProfile(root, "host-crash");
+        var profile = new ProfileStore(root);
+        var url = "http://127.0.0.1:" + profile.State.LocalHostingPort;
+        using var child = StartSelf(["--scenario", "host-crash", "--profile", root]);
+        var errors = child.StandardError.ReadToEndAsync();
+        int? hostProcess = null;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            while (true)
+            {
+                var line = await child.StandardOutput.ReadLineAsync(timeout.Token);
+                if (line == null) throw new IOException("The crash fixture exited before hosting: " + await errors);
+                if (line.StartsWith("HOST_READY ", StringComparison.Ordinal)) { hostProcess = int.Parse(line[11..]); break; }
+                Console.WriteLine(line);
+            }
+            Check(await OwnedHostChecks.PortOpenAsync(profile.State.LocalHostingPort) && OwnedHostChecks.ProcessAlive(hostProcess),
+                "A launcher subprocess owns a live host before abrupt termination");
+            // Kill(false) is intentional: tree-killing here would conceal a
+            // broken Windows Job lifetime contract in the product itself.
+            child.Kill(entireProcessTree: false);
+            await child.WaitForExitAsync();
+            await OwnedHostChecks.AssertStoppedAsync(url, hostProcess);
+            Check(true, "Abruptly terminating only the launcher also kills its host and closes the port");
+        }
+        finally
+        {
+            if (!child.HasExited) { child.Kill(entireProcessTree: true); await child.WaitForExitAsync(); }
+            if (OwnedHostChecks.ProcessAlive(hostProcess))
+            {
+                using var orphan = Process.GetProcessById(hostProcess!.Value);
+                orphan.Kill(entireProcessTree: true);
+                await orphan.WaitForExitAsync();
+            }
+        }
+    }
+
+    private sealed record ExpectedHost(string HostId, string PackId, string Invite);
+
+    private sealed class FixtureApp : LauncherApp
+    {
+        public FixtureApp()
+        {
+            // WPF's generated Application.LoadComponent rejects an App subclass.
+            // Load the same application resource dictionary while exercising the
+            // real OnStartup/OnExit methods with only host paths isolated.
+            var theme = XDocument.Load(Path.Combine(OwnedHostChecks.RepositoryRoot, "src", "Hearth.App", "App.xaml"));
+            XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+            var dictionary = new XElement(xaml + "ResourceDictionary",
+                new XAttribute(XNamespace.Xmlns + "x", "http://schemas.microsoft.com/winfx/2006/xaml"),
+                theme.Root!.Element(xaml + "Application.Resources")!.Elements());
+            Resources = (ResourceDictionary)XamlReader.Parse(dictionary.ToString());
+            ShutdownMode = Enum.Parse<ShutdownMode>(theme.Root.Attribute("ShutdownMode")!.Value);
+        }
+
+        protected override AppLocalHost CreateLocalHost(ProfileStore profile) => new(profile.Root, OwnedHostChecks.HostExecutable,
+            profile.State.LocalHostingPort, profile.State.LocalHostDataDirectory);
     }
 
     private static async Task Activate(string profileRoot, bool startup)

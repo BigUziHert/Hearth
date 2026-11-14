@@ -11,6 +11,7 @@ using Hearth.Core;
 namespace Hearth.App;
 public partial class MainWindow
 {
+    private bool IsOwnedHost(HostConnection host) => host.Id == store.State.LocalHostConnectionId;
     private void ShowHosts() => ShowHosts(expandLocal: false);
     private void ShowHosts(bool expandLocal)
     {
@@ -29,17 +30,19 @@ public partial class MainWindow
                 var health = Text("Checking connection…", 13, false, "#ADBAB1"); card.Children.Add(health);
                 _ = CheckHostConnection(host, health);
                 if (local) card.Children.Add(Text("Local address. Friends on other networks need a reachable host address.", 12, false, "#D8B36B"));
-                card.Children.Add(Row(Button("Manage packs", () =>
+                var manage = Button("Manage packs", () =>
                 {
                     if (selectedHost?.Id != host.Id) { selectedPack = null; draft = null; published = null; }
                     selectedHost = host; ShowPublishing();
-                }), Button("Check connection", () => _ = CheckHostConnection(host, health), true)));
+                });
+                manage.IsEnabled = !IsOwnedHost(host) || (Application.Current as App)?.LocalHost?.IsRunning == true;
+                card.Children.Add(Row(manage, Button("Check connection", () => _ = CheckHostConnection(host, health), true)));
                 var details = new StackPanel { Margin = new(0, 10, 0, 0) };
                 details.Children.Add(Text("Use the owner key to connect from another PC. It gives management access.", 12, false, "#ADBAB1"));
                 var connectionActions = Row(Button("Copy owner key", () => { Clipboard.SetText(host.OwnerToken); Status("Owner key copied. Keep it private."); }, true));
-                if (!local) connectionActions.Children.Add(Button("Forget connection", () =>
+                if (!IsOwnedHost(host)) connectionActions.Children.Add(Button("Forget connection", () =>
                 {
-                    if (MessageBox.Show(this, $"Remove {host.Name} from this app? Copy its owner key first if you need to reconnect. Its packs, host service, and joined packs will remain.", "Forget host connection", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+                    if (MessageBox.Show(this, $"Remove {host.Name} from this app? Copy its owner key first if you need to reconnect. Its packs and joined packs will remain.", "Forget host connection", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
                     store.State.Hosts.RemoveAll(x => x.Id == host.Id); ownerPackCache.Remove(host.Id); ownerAdminCache.Remove(host.Id);
                     if (selectedHost?.Id == host.Id) { selectedHost = null; selectedPack = null; draft = null; published = null; }
                     store.Save(); ShowHosts();
@@ -50,7 +53,7 @@ public partial class MainWindow
         }
         var add = Card("Add a host");
         var remoteContent = new StackPanel { Margin = new(0, 12, 0, 8) };
-        remoteContent.Children.Add(Text("Manage packs on an existing host, including your always-on server.", 13, false, "#ADBAB1"));
+        remoteContent.Children.Add(Text("Manage packs on an existing host. Hearth must be open or in the tray on that PC.", 13, false, "#ADBAB1"));
         var name = Field(remoteContent, "Name", "My server");
         var url = Field(remoteContent, "Host address", "https://");
         remoteContent.Children.Add(Text("Owner key", 12, true)); var key = new PasswordBox { Margin = new(0, 5, 0, 12) }; remoteContent.Children.Add(key);
@@ -68,26 +71,42 @@ public partial class MainWindow
         add.Children.Add(new Expander { Header = "Connect an existing host", Content = remoteContent, IsExpanded = false, Margin = new(0, 3, 0, 13) });
         var localContent = new StackPanel { Margin = new(0, 12, 0, 8) };
         localContent.Children.Add(Text("The host shares modpack files. Your Minecraft world server stays separate.", 13, false, "#ADBAB1"));
-        var serviceState = Text("Checking the Windows service…", 13, true); localContent.Children.Add(serviceState);
-        localContent.Children.Add(Text("Keeps running when Hearth closes and starts with Windows. Setup requires administrator access.", 12, false, "#ADBAB1"));
-        var enable = Button("Enable hosting", () => _ = EnableHosting());
-        var stop = Button("Stop hosting", () =>
+        var app = Application.Current as App;
+        var running = app?.LocalHost?.IsRunning == true;
+        localContent.Children.Add(Text(running ? "Hosting is running" : store.State.LocalHostingEnabled ? "Hosting is stopped — retry to start it" : "Hosting is off", 13, true));
+        var hostingError = !string.IsNullOrEmpty(app?.HostingError) ? app.HostingError : app?.LocalHost?.LastError;
+        if (!string.IsNullOrEmpty(hostingError)) localContent.Children.Add(Text(hostingError, 12, false, "#D8B36B"));
+        localContent.Children.Add(Text("Runs while Hearth is open or in the system tray. Quitting Hearth stops hosting. Reopening Hearth resumes it.", 12, false, "#ADBAB1"));
+        localContent.Children.Add(Text("Choose close to tray and start with Windows in Settings.", 12, false, "#ADBAB1"));
+        PasswordBox? recoveryKey = null;
+        if (app?.LocalHost is { } controller && string.IsNullOrEmpty(store.State.LocalHostConnectionId)
+            && File.Exists(Path.Combine(controller.DataDirectory, "host.json"))
+            && !store.State.Hosts.Any(host => host.Url == controller.HostUrl))
         {
-            if (MessageBox.Show(this, "Stop sharing packs from this PC? Players won't be able to download updates until hosting is enabled again.", "Stop hosting", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-            _ = Run("Stopping host…", async _ =>
-            {
-                await ServiceScript("Disable-Hosting.ps1", []);
-                ShowHosts(); Status("Hosting stopped. Pack data was kept.");
-            });
-        }, true);
-        stop.IsEnabled = false;
+            localContent.Children.Add(Text("Existing pack data was found. Paste its original owner key to resume hosting.", 13, false, "#D8B36B"));
+            localContent.Children.Add(Text("Original owner key", 12, true));
+            recoveryKey = new PasswordBox { Margin = new(0, 5, 0, 12) }; localContent.Children.Add(recoveryKey);
+        }
+        var enable = Button(running ? "Hosting enabled" : store.State.LocalHostingEnabled ? "Retry hosting" : "Enable hosting", () => _ = EnableHosting(recoveryKey?.Password));
+        enable.IsEnabled = !running;
+        var stop = Button("Disable hosting", () => _ = Run("Stopping host…", async _ =>
+        {
+            if (Application.Current is not App current) return;
+            await current.DisableHostingAsync();
+            ShowHosts(expandLocal: true); Status("Hosting disabled. Your packs and owner key were kept.");
+        }), true);
+        stop.IsEnabled = running || store.State.LocalHostingEnabled;
         localContent.Children.Add(Row(enable, stop));
-        _ = UpdateServiceStatus(serviceState, enable, stop);
-        add.Children.Add(new Expander { Header = "Host on this PC", Content = localContent, IsExpanded = expandLocal, Margin = new(0, 2, 0, 5) });
+        add.Children.Add(new Expander { Header = "Host on this PC", Content = localContent, IsExpanded = expandLocal || running || store.State.LocalHostingEnabled, Margin = new(0, 2, 0, 5) });
     }
 
     private async Task CheckHostConnection(HostConnection host, TextBlock label)
     {
+        if (IsOwnedHost(host) && (Application.Current as App)?.LocalHost?.IsRunning != true)
+        {
+            label.Text = store.State.LocalHostingEnabled ? "Hosting is stopped. Retry under Host on this PC." : "Hosting is off. Enable it below to manage and share packs.";
+            return;
+        }
         label.Text = "Checking connection…";
         try
         {
@@ -110,48 +129,49 @@ public partial class MainWindow
         }
         catch (Exception ex) { label.Text = "Could not reach this host. Check its connection and try again."; label.ToolTip = ex.Message; }
     }
-    private async Task UpdateServiceStatus(TextBlock label, Button? enable = null, Button? stop = null)
+    private string InstallDirectory => AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+    private async Task EnableHosting(string? recoveryKey = null) => await Run("Starting hosting…", async ct =>
     {
+        if (Application.Current is not App app) throw new InvalidOperationException("Open Hearth to enable hosting.");
         try
         {
-            var info = new ProcessStartInfo("sc.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-            info.ArgumentList.Add("query"); info.ArgumentList.Add("HearthHost");
-            using var process = Process.Start(info)!; var output = await process.StandardOutput.ReadToEndAsync(); await process.WaitForExitAsync();
-            var exists = process.ExitCode == 0; var running = exists && output.Contains("RUNNING");
-            label.Text = !exists ? "Hosting is not enabled" : running ? "Host service is running" : "Host service is stopped";
-            if (enable != null) enable.Content = running ? "Update host service" : exists ? "Start hosting" : "Enable hosting";
-            if (stop != null) stop.IsEnabled = exists;
-        }
-        catch (Exception ex) { label.Text = "Service status unavailable"; label.ToolTip = ex.Message; }
-    }
-    private string InstallDirectory => AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
-    private async Task ServiceScript(string name, string[] arguments)
-    {
-        var script = Path.Combine(InstallDirectory, "scripts", name);
-        if (!File.Exists(script)) throw new FileNotFoundException("Use the installed Hearth app to enable Windows hosting. For a development host, see the guide.");
-        var info = new ProcessStartInfo("powershell.exe") { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
-        foreach (var argument in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script }.Concat(arguments)) info.ArgumentList.Add(argument);
-        using var process = Process.Start(info) ?? throw new IOException("Windows could not open the hosting setup."); await process.WaitForExitAsync();
-        if (process.ExitCode != 0) throw new IOException("Hosting setup did not finish. Confirm administrator access and see the hosting log in ProgramData\\Hearth, then retry.");
-    }
-    private async Task EnableHosting() => await Run("Setting up host service…", async ct =>
-    {
-        var local = await LocalHostingSetup.EnableAsync(store,
-            temp => ServiceScript("Enable-Hosting.ps1", ["-InstallDir", InstallDirectory, "-TokenFile", temp]),
-            async (host, cancellation) =>
+            if (recoveryKey != null)
             {
-                using var api = new HearthApi(host.Url, host.OwnerToken);
-                _ = await api.HealthAsync(cancellation); await api.ListPacksAsync(cancellation);
-            }, ct);
-        if (local == null)
-        {
-            ShowHosts(expandLocal: true);
-            Status("Hosting setup canceled. No changes were made to hosting.");
-            return;
+                if (recoveryKey.Trim().Length is < 32 or > 512) throw new InvalidOperationException("Paste the original owner key before enabling hosting.");
+                var previousKey = store.State.LocalHostOwnerToken;
+                store.State.LocalHostOwnerToken = recoveryKey.Trim();
+                try { store.Save(); }
+                catch { store.State.LocalHostOwnerToken = previousKey; throw; }
+            }
+            var local = await app.EnableHostingAsync(ct);
+            selectedHost = local; selectedPack = null; draft = null; published = null;
+            Status("Hosting is running while Hearth is open or in the tray. Open Manage packs to create a pack.");
         }
-        selectedHost = local; selectedPack = null; draft = null; published = null; ShowHosts();
-        Status("Hosting enabled. Open Manage packs to create a pack.");
+        finally { ShowHosts(expandLocal: true); }
     });
+    public async void StartConfiguredHosting()
+    {
+        await Run("Resuming hosting…", async ct =>
+        {
+            if (Application.Current is not App app) return;
+            try
+            {
+                await app.EnableHostingAsync(ct);
+                Status("Hosting is running while Hearth is open or in the tray.");
+            }
+            catch (Exception exception)
+            {
+                if (exitRequested || app.IsExiting) return;
+                // A failed background startup must not leave a modal dialog hidden
+                // behind the tray. Keep the launcher usable with a visible retry.
+                ShowHosts(expandLocal: true);
+                Show();
+                if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+                Activate();
+                Status("Hosting did not start. " + exception.Message);
+            }
+        });
+    }
     private void OpenGuide()
     {
         var guide = Path.Combine(InstallDirectory, "docs", "FIRST-RUN.md");

@@ -49,6 +49,12 @@ public partial class MainWindow
             };
         }
         else header.Children.Add(Text(host.Name, 13, false, "#ADBAB1"));
+        if (IsOwnedHost(host) && (Application.Current as App)?.LocalHost?.IsRunning != true)
+        {
+            header.Children.Add(Text("Hosting is off on this PC. Enable it to manage and share your packs.", 13, false, "#ADBAB1"));
+            header.Children.Add(Row(Button("Open hosting", () => ShowHosts(expandLocal: true))));
+            return;
+        }
         var create = Button("New pack", ShowCreatePack);
         create.IsEnabled = ownerAdminCache.GetValueOrDefault(host.Id);
         create.ToolTip = "Only the host administrator can create new packs.";

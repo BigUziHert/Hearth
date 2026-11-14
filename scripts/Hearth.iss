@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.7"
+  #define AppVersion "1.0.8"
 #endif
 #define AppName "Hearth"
 #define AppExe "Hearth.App.exe"
@@ -36,6 +36,7 @@ Source: "..\artifacts\publish\app\*"; DestDir: "{app}"; Flags: ignoreversion rec
 Source: "..\artifacts\publish\host\*"; DestDir: "{app}\host"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "Enable-Hosting.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "Disable-Hosting.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "Retire-HostingService.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "..\docs\FIRST-RUN.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 
 [Icons]
@@ -65,21 +66,64 @@ begin
   Result := RegKeyExists(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Services\HearthHost');
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+function RetireHostService(const ScriptPath: String): String;
 var
   ResultCode: Integer;
-  Params: String;
+  Params, SidPath, OwnerSid: String;
+  SidText: AnsiString;
 begin
-  if (CurStep = ssPostInstall) and HasHostService then begin
-    Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\scripts\Enable-Hosting.ps1') + '" -InstallDir "' + ExpandConstant('{app}') + '" -UpdateOnly';
-    if not ShellExec('runas', ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-      MsgBox('Hearth is updated. The hosting service still needs its update. Open Hearth, go to Hosting, and enable/update hosting to finish. Existing pack data has been preserved.', mbInformation, MB_OK);
+  Result := '';
+  SidPath := ExpandConstant('{tmp}\hearth-owner-sid.txt');
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '" -GetCurrentUserSid -SidFile "' + SidPath + '"';
+  if not ExecAsOriginalUser(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+    Result := 'Could not identify the Windows account that owns Hearth. The installation has not been changed.';
+    Exit;
+  end;
+  if (ResultCode <> 0) or not LoadStringFromFile(SidPath, SidText) then begin
+    Result := 'Could not identify the Windows account that owns Hearth. The installation has not been changed.';
+    Exit;
+  end;
+  OwnerSid := Trim(String(SidText));
+  DeleteFile(SidPath);
+  if (Pos('S-1-5-21-', OwnerSid) <> 1) and (Pos('S-1-12-1-', OwnerSid) <> 1) then begin
+    Result := 'The Windows account could not be verified. The installation has not been changed.';
+    Exit;
+  end;
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '" -OwnerSid "' + OwnerSid + '"';
+  if not ShellExec('runas', ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+    Result := 'The old background host needs a one-time Windows administrator approval to stop it and preserve its packs for Hearth. Approval was canceled or could not start. The installation has not been changed; the existing host may still be running.';
+    Exit;
+  end;
+  if (ResultCode <> 0) or HasHostService then begin
+    Result := 'Windows could not finish retiring the old background host. The installation has not been changed and your pack data was preserved. Close the Windows Services window and retry. If this continues, run scripts\Retire-HostingService.ps1 with your Windows user SID as administrator, then retry.';
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if HasHostService then begin
+    ExtractTemporaryFile('Retire-HostingService.ps1');
+    Result := RetireHostService(ExpandConstant('{tmp}\Retire-HostingService.ps1'));
   end;
 end;
 
 function InitializeUninstall(): Boolean;
+var
+  ResultCode: Integer;
+  Params: String;
 begin
   Result := True;
-  if HasHostService then
-    MsgBox('The independent Hearth hosting service will keep running. To stop hosting, first open Hearth and disable Hosting, or run the installed scripts\Disable-Hosting.ps1 as administrator. Your packs and personal Minecraft files are preserved.', mbInformation, MB_OK);
+  if HasHostService then begin
+    Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\scripts\Disable-Hosting.ps1') + '"';
+    if not ShellExec('runas', ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+      MsgBox('Windows approval to stop the old independent host was canceled or could not start. Uninstall was canceled; the existing host may still be running. Your data was preserved.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    if (ResultCode <> 0) or HasHostService then begin
+      MsgBox('Windows could not finish removing the old independent host. Close the Windows Services window and retry. Uninstall was canceled so a host is not left behind. Your data was preserved.', mbError, MB_OK);
+      Result := False;
+    end;
+  end;
 end;

@@ -3,6 +3,7 @@ using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows;
+using Hearth.Core;
 
 namespace Hearth.App;
 public partial class App : Application
@@ -13,6 +14,8 @@ public partial class App : Application
     private TrayController? tray;
     public bool IsExiting { get; private set; }
     public bool TrayAvailable => tray != null;
+    public AppLocalHost? LocalHost { get; private set; }
+    public string HostingError { get; private set; } = "";
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -35,6 +38,8 @@ public partial class App : Application
                 client.Connect(2000); using var writer = new StreamWriter(client); writer.WriteLine(invite ?? "activate"); writer.Flush(); Shutdown(); return;
             }
             profile = new ProfileStore(root);
+            LegacyHostingMigration.Adopt(profile);
+            LocalHost = CreateLocalHost(profile);
             var window = new MainWindow(profile); MainWindow = window;
             window.Closing += (_, args) =>
             {
@@ -55,8 +60,42 @@ public partial class App : Application
             if (!startup || invite != null || !TrayAvailable) window.Show();
             if (invite != null) window.OpenInvite(invite);
             _ = ListenAsync(pipe, window);
+            if (profile.State.LocalHostingEnabled) window.StartConfiguredHosting();
         }
         catch (Exception ex) { MessageBox.Show(ex.Message, "Hearth could not start", MessageBoxButton.OK, MessageBoxImage.Error); Shutdown(1); }
+    }
+    protected virtual AppLocalHost CreateLocalHost(ProfileStore store) => new(store.Root,
+        port: store.State.LocalHostingPort,
+        dataDirectory: string.IsNullOrWhiteSpace(store.State.LocalHostDataDirectory) ? null : store.State.LocalHostDataDirectory);
+
+    public async Task<HostConnection> EnableHostingAsync(CancellationToken cancellationToken = default)
+    {
+        if (profile == null || LocalHost == null || IsExiting) throw new InvalidOperationException("Hearth is closing.");
+        HostingError = "";
+        try
+        {
+            if (LegacyHostingMigration.ServiceInstalled())
+                throw new InvalidOperationException("An older Hearth Windows service is installed. Run the latest Hearth installer to migrate it before enabling hosting.");
+            return await LocalHostingSetup.EnableAsync(profile, LocalHost.HostUrl, LocalHost.DataDirectory,
+                LocalHost.StartAsync, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            await LocalHost.StopAsync();
+            HostingError = exception is OperationCanceledException ? "Hosting startup was canceled. Retry to start hosting." : exception.Message;
+            throw;
+        }
+    }
+
+    public async Task DisableHostingAsync()
+    {
+        if (profile == null || LocalHost == null) return;
+        var previous = profile.State.LocalHostingEnabled;
+        profile.State.LocalHostingEnabled = false;
+        try { profile.Save(); }
+        catch { profile.State.LocalHostingEnabled = previous; throw; }
+        await LocalHost.StopAsync();
+        HostingError = "";
     }
     private async Task ListenAsync(string name, MainWindow window)
     {
@@ -109,6 +148,7 @@ public partial class App : Application
     {
         IsExiting = true;
         pipeCancel.Cancel();
+        LocalHost?.Dispose();
         tray?.Dispose();
         tray = null;
         singleInstance?.Dispose();

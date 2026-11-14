@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 [CmdletBinding()]
-param([switch]$SkipTests, [switch]$SkipInstaller, [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.0.7', [string]$IsccPath)
+param([switch]$SkipTests, [switch]$SkipInstaller, [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.0.8', [string]$IsccPath)
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo
@@ -16,6 +16,8 @@ if (-not $SkipTests) {
     Invoke-Dotnet @('run','--project','tests/Hearth.Tests','-c','Release','--no-build')
     Invoke-Dotnet @('run','--project','tests/Hearth.App.Tests','-c','Release','--no-build')
     Invoke-Dotnet @('run','--project','tests/Hearth.Lifecycle.Tests','-c','Release','--no-build')
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'tests\legacy_migration_helpers.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'Legacy host migration helper checks failed.' }
 }
 $publish = Join-Path $repo 'artifacts\publish'
 foreach ($parent in @((Join-Path $repo 'artifacts'),$publish)) {

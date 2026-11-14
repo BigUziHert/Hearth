@@ -5,6 +5,8 @@ using Hearth.Host;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.RateLimiting;
 
+using var launcherLifetime = await LauncherLifetime.ConnectAsync(args);
+if (!launcherLifetime.MayStart) return;
 var arguments = HostArguments.Parse(args);
 if (arguments.Initialize)
 {
@@ -93,7 +95,13 @@ app.MapGet("/packs/{id}/blobs/{sha256}", (HttpContext context, string id, string
     return Results.File(path, "application/java-archive", enableRangeProcessing: true);
 });
 app.MapPost("/packs/{id}/releases", (HttpContext context, string id, PublishRequest request) => store.Publish(id, Bearer(context), request));
-await app.RunAsync();
+if (launcherLifetime.IsManaged)
+{
+    await app.StartAsync(launcherLifetime.Stopping);
+    Console.WriteLine(LauncherLifetime.ReadyMessage);
+    await app.WaitForShutdownAsync(launcherLifetime.Stopping);
+}
+else await app.RunAsync();
 
 static string Bearer(HttpContext context)
 {

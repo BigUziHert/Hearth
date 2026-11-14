@@ -17,7 +17,7 @@ public partial class MainWindow
         var behavior = Card("Startup & closing", "Choose how Hearth runs on this PC.");
         var closeToTray = new CheckBox { Content = "Close to system tray", Style = (Style)FindResource("SettingToggle"), IsChecked = store.State.CloseToTray, FontSize = 15, Margin = new(0, 7, 0, 8) };
         behavior.Children.Add(closeToTray);
-        behavior.Children.Add(Text("Keep Hearth running when you close its window. Use the tray icon to reopen it or quit.", 13, false, "#A4AFAA"));
+        behavior.Children.Add(Text("Keep Hearth and hosting running when you close its window. Quit from the tray to stop both.", 13, false, "#A4AFAA"));
         closeToTray.Click += (_, _) =>
         {
             var previous = store.State.CloseToTray;
@@ -37,7 +37,7 @@ public partial class MainWindow
         };
         var startWithWindows = new CheckBox { Content = "Start Hearth with Windows", Style = (Style)FindResource("SettingToggle"), IsChecked = WindowsStartup.IsEnabled(store.Root), FontSize = 15, Margin = new(0, 11, 0, 8) };
         behavior.Children.Add(startWithWindows);
-        behavior.Children.Add(Text("Open Hearth when you sign in. With close to tray enabled, it starts quietly in the tray.", 13, false, "#A4AFAA"));
+        behavior.Children.Add(Text("Open Hearth and resume enabled hosting when you sign in. With close to tray enabled, it starts quietly in the tray.", 13, false, "#A4AFAA"));
         startWithWindows.Click += (_, _) =>
         {
             try

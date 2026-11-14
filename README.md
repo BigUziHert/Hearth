@@ -4,17 +4,17 @@ A native Windows launcher for private Minecraft Java modpacks. Owners publish co
 
 Hearth shows the next action for each pack: request approval, set up Prism, install and play, or play the installed copy when its host is offline. **Add modpack** opens invites, **Manage modpacks** handles publishing and members, **Hosting** connects or runs hosts, and **Settings** contains startup and closing preferences, Prism, and launcher updates.
 
-The same installer contains the launcher and an optional independent Windows host service. A host can serve multiple private packs; a player can join multiple hosts. Hearth distributes mod files. Your existing Minecraft server still runs the shared world.
+The same installer contains the launcher and optional hosting. Hosting runs while Hearth is open or in the system tray and stops when Hearth exits completely. A host can serve multiple private packs; a player can join multiple hosts. Hearth distributes mod files. Your existing Minecraft server still runs the shared world.
 
 ## Start here
 
 - [Download the latest Windows installer](https://github.com/BigUziHert/Hearth/releases/latest)
-- Local installer: `artifacts/Hearth-Setup-1.0.7-win-x64.exe`
-- Local source archive: `artifacts/Hearth-Source-1.0.7.zip`
+- Local installer: `artifacts/Hearth-Setup-1.0.8-win-x64.exe`
+- Local source archive: `artifacts/Hearth-Source-1.0.8.zip`
 - [First-time hosting, publishing, and joining](docs/FIRST-RUN.md)
 - [Verification and remaining manual checks](docs/VERIFICATION.md)
 - [HTTP protocol and host data](docs/HOST-PROTOCOL.md)
-- [Changes in 1.0.7](docs/RELEASE-NOTES-1.0.7.md)
+- [Changes in 1.0.8](docs/RELEASE-NOTES-1.0.8.md)
 
 ## Startup and the system tray
 
@@ -23,7 +23,7 @@ Open **Settings → Startup & closing**. Both options are off by default:
 - **Close to system tray** keeps Hearth running when you close its window. Double-click its tray icon to reopen it, or right-click for **Open Hearth** and **Quit Hearth**.
 - **Start Hearth with Windows** starts the launcher when your Windows account signs in. It does not launch before sign-in. If close to tray is also enabled, Hearth starts quietly in the tray.
 
-Turning these options off restores normal window closing and disables automatic launcher startup. The optional hosting service remains independent: closing or quitting the launcher does not stop hosting. Installer updates preserve these preferences; uninstall removes the launcher's normal startup entry.
+Turning these options off restores normal window closing and disables automatic launcher startup. Hosting continues while the window is minimized or Hearth is in the tray. **Quit Hearth** always stops local hosting; closing the window also stops hosting when close to tray is off. Enabled hosting resumes when Hearth next opens. To resume after a reboot, enable **Start Hearth with Windows** and sign in to Windows. Installer updates preserve these preferences; uninstall removes the launcher's normal startup entry.
 
 ## Build and run
 
@@ -54,11 +54,11 @@ Use a separate local profile for testing:
 | Project | Responsibility |
 | --- | --- |
 | `src/Hearth.App` | WPF launcher, state-aware library, publishing, approval, hosting setup, Prism and launcher updates |
-| `src/Hearth.Host` | ASP.NET Core Windows service, hashed bearer credentials, per-pack authorization, immutable blobs and atomic releases |
+| `src/Hearth.Host` | Launcher-owned ASP.NET Core host process, hashed bearer credentials, per-pack authorization, immutable blobs and atomic releases |
 | `src/Hearth.Core` | HTTP client, validation, journaled synchronization, Prism handoff, verified GitHub updates |
 | `tests/Hearth.Tests` | Real local-host and separate-profile integration, interrupted transfers, recovery, update fixtures |
 | `tests/Hearth.App.Tests` | Encrypted profile migration and actual WPF navigation/access-state checks |
-| `scripts` | Installer, self-contained build, release verification, elevated service management |
+| `scripts` | Installer, self-contained build, release verification, one-time legacy service retirement |
 
 Player credentials use Windows DPAPI for the current Windows user. Pack membership is separate from Microsoft authentication: an owner approves the requested fingerprint, and Prism authenticates the player's Minecraft account. Hearth does not collect account passwords.
 
@@ -73,13 +73,13 @@ Hearth checks [official releases](https://github.com/BigUziHert/Hearth) from **S
 The [Windows release workflow](.github/workflows/windows-release.yml) builds and tests pull requests and main-branch changes. A `v*` tag also publishes a complete stable GitHub release after all checks pass. To release a later version:
 
 1. Set `Directory.Build.props` to the new version, update script defaults and add `docs/RELEASE-NOTES-VERSION.md`.
-2. Commit and push the source, then push a matching tag such as `v1.0.8`. Tag and source version must match exactly.
-3. The workflow builds `Hearth-Setup-1.0.8-win-x64.exe`, a source ZIP, and `SHA256SUMS.txt`; uploads them to a draft; verifies the expected installer; and publishes the complete release.
+2. Commit and push the source, then push a matching tag such as `v1.0.9`. Tag and source version must match exactly.
+3. The workflow builds `Hearth-Setup-1.0.9-win-x64.exe`, a source ZIP, and `SHA256SUMS.txt`; uploads them to a draft; verifies the expected installer; and publishes the complete release.
 4. In an older Hearth, open **Settings → Updates**, then use **Check for updates → Download update → Restart to update**.
 
-For a manual release, run `scripts/build.ps1 -Version 1.0.8` after changing the source version, then upload the resulting installer, source ZIP, and checksums to a stable `v1.0.8` release. The release must contain exactly one Windows installer whose version matches the tag. Do not replace files in a published release; publish a higher version.
+For a manual release, run `scripts/build.ps1 -Version 1.0.9` after changing the source version, then upload the resulting installer, source ZIP, and checksums to a stable `v1.0.9` release. The release must contain exactly one Windows installer whose version matches the tag. Do not replace files in a published release; publish a higher version.
 
-The updater checks the GitHub asset digest or exact filename in SHA256SUMS, verifies bytes before saving and again before executing, and reuses a verified cached download. Installer updates preserve profiles, Prism instances, and hosted packs. Updating an enabled service requires elevation. Installers are unsigned until a code-signing certificate is configured.
+The updater checks the GitHub asset digest or exact filename in SHA256SUMS, verifies bytes before saving and again before executing, and reuses a verified cached download. Installer updates preserve profiles, Prism instances, and hosted packs. Fresh hosting needs no administrator prompt. When upgrading an old independent `HearthHost` service, Windows asks once to retire it; canceling stops the upgrade before replacing the app. The existing host may still be running if approval is canceled. Installers are unsigned until a code-signing certificate is configured.
 
 ## Storage and backup
 
@@ -88,10 +88,10 @@ The updater checks the GitHub asset digest or exact filename in SHA256SUMS, veri
 | Player profile and encrypted credentials | `%LOCALAPPDATA%\Hearth\profile.bin` |
 | Personal Minecraft instances | `%LOCALAPPDATA%\Hearth\Prism\instances` |
 | Download cache and local drafts | `%LOCALAPPDATA%\Hearth\cache`, `Drafts` |
-| Hosted packs and member state | `%PROGRAMDATA%\Hearth\Host` |
-| Independent service binaries | `%PROGRAMDATA%\Hearth\Service` |
+| New hosted packs and member state | `%LOCALAPPDATA%\Hearth\Host` (or `Host` inside a separate profile) |
+| Migrated service data | Existing location, normally `%PROGRAMDATA%\Hearth\Host` |
 | Per-user installed launcher | `%LOCALAPPDATA%\Programs\Hearth` |
 
-Back up host data while the service is stopped. Keep an owner key in a password manager: DPAPI data cannot be moved to another Windows account as a credential backup. Uninstall preserves data and leaves the independent host running. Stop hosting first if it should go offline.
+Back up host data while Hearth is fully closed or hosting is stopped. Keep an owner key in a password manager: DPAPI data cannot be moved to another Windows account as a credential backup. Uninstall preserves data and stops hosting. Legacy service migration keeps existing data in place and grants the installing Windows account access; packs, releases, members, and owner credentials stay unchanged. Old protected service binaries are left inert for recovery, with no registered service to start them.
 
 Prism Launcher and Minecraft are separate projects. Hearth is not affiliated with Mojang, Microsoft, or Prism Launcher.

@@ -31,7 +31,11 @@ public sealed partial class HostStore : IDisposable
     public static void Initialize(HostArguments args)
     {
         if (args.OwnerTokenFile is null) throw new ArgumentException("Initialize using --owner-token-file with a file containing a random owner credential of at least 32 characters.");
-        var token = File.ReadAllText(args.OwnerTokenFile).Trim();
+        // App-owned setup keeps a delete-on-close handle so a launcher crash
+        // cannot strand a plaintext credential file. Allow that handle to coexist.
+        using var tokenStream = new FileStream(args.OwnerTokenFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var tokenReader = new StreamReader(tokenStream);
+        var token = tokenReader.ReadToEnd().Trim();
         if (token.Length < 32 || token.Length > 512) throw new ArgumentException("The owner credential must have 32–512 characters.");
         Directory.CreateDirectory(args.Data);
         var path = Path.Combine(args.Data, "host.json");

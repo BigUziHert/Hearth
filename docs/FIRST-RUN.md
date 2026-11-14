@@ -2,7 +2,7 @@
 
 ## Join and play
 
-1. Install `Hearth-Setup-1.0.7-win-x64.exe` and open Hearth.
+1. Install `Hearth-Setup-1.0.8-win-x64.exe` and open Hearth.
 2. Select **Add modpack**, paste your friend's `hearth://join?...` invite, enter the name they know you by, and select **Request access**. You can also open an invite directly after installing Hearth.
 3. Select the pack in the sidebar. Open **⋯ → Member details & fingerprint** and tell the owner your name and fingerprint so they approve the correct request. Select **Check approval** after they approve you.
 4. The main button becomes **Set up Prism** if Minecraft setup is needed. Hearth downloads and verifies the official portable Windows launcher. Finish Prism's first-run wizard, then use **Settings → Accounts → Add Microsoft** inside Prism. Sign in with your own account that owns Minecraft Java and let Prism configure Java. You can reopen Prism from Hearth's **Settings → Open Prism**.
@@ -20,12 +20,12 @@ In **Settings → Startup & closing**, choose either option independently. Both 
 - **Close to system tray**: closing the window keeps Hearth running. Find its icon beside the Windows clock or under the hidden-icons arrow. Double-click to reopen it, or right-click and select **Open Hearth** or **Quit Hearth**. Quit exits the launcher completely.
 - **Start Hearth with Windows**: open Hearth when your Windows account signs in after starting the PC. This starts the launcher after sign-in, not before login. If **Close to system tray** is also enabled, it starts quietly in the tray.
 
-You can turn either option off here. These choices do not change the independent hosting service: it continues serving packs even after you quit the launcher. Updates keep your preferences, and uninstall removes automatic startup for the normal launcher profile.
+You can turn either option off here. If this PC hosts packs, hosting continues while Hearth is open, minimized, or in the tray. **Quit Hearth** stops hosting. Closing the window stops hosting too when **Close to system tray** is off. Hearth remembers enabled hosting and resumes it when the app next opens. Enable **Start Hearth with Windows** to resume it after you sign in following a reboot. Updates keep your preferences, and uninstall removes automatic startup for the normal launcher profile.
 
 ## Host from your always-on Windows PC
 
-1. Install the same Hearth installer on the server PC. Open **Hosting → Host on this PC → Enable hosting** and accept Windows administrator elevation. This creates the independent `HearthHost` service with delayed automatic startup and restart recovery. Closing Hearth does not stop it. Canceling the administrator prompt leaves hosting unchanged and does not add a new host connection; you can retry **Enable hosting** later.
-2. Return to **Hosting** and expand **Host on this PC**. Confirm **Host service is running**. The local host listens on `http://127.0.0.1:17842`; keep the Minecraft world server on its existing port.
+1. Install the same Hearth installer on the server PC. Open **Hosting → Host on this PC → Enable hosting**. Fresh hosting does not require administrator permission. Keep Hearth open or enable **Settings → Startup & closing → Close to system tray**. Use **Quit Hearth** whenever you want to stop hosting completely.
+2. Return to **Hosting** and confirm that hosting is running. The local host listens on `http://127.0.0.1:17842`; keep the Minecraft world server on its existing port. To resume hosting after a reboot, enable **Start Hearth with Windows** and sign in to Windows.
 3. Expand the local connection's **Connection options**, select **Copy owner key**, and save it securely. Use that key on your main PC to administer the host. Ordinary players get invites, never the owner key.
 4. Give the host a stable HTTPS address using one of the choices below. In **Hosting → Connect an existing host**, enter that address and the owner key you copied, then select **Connect**. Use the public connection when sharing invites. A local test invite works only on the host PC.
 
@@ -50,14 +50,14 @@ Follow Tailscale's account approval steps for Funnel/HTTPS and copy the resultin
 caddy reverse-proxy --from packs.example.net --to 127.0.0.1:17842
 ```
 
-4. Configure Caddy to start automatically as a Windows service or startup task using its Windows installation guidance. Closing a foreground Caddy terminal stops that forwarding process. Keep the Hearth service separate.
-5. Use `https://packs.example.net` in Hearth. Caddy handles certificates and forwards requests to the loopback service. If your ISP uses carrier-grade NAT, inbound port forwarding may not work; use a tunnel or obtain a reachable public address.
+4. Configure Caddy to start automatically as a Windows service or startup task using its Windows installation guidance. Closing a foreground Caddy terminal stops that forwarding process. Hearth itself must remain open or in the tray to serve packs.
+5. Use `https://packs.example.net` in Hearth. Caddy handles certificates and forwards requests to the local host. If your ISP uses carrier-grade NAT, inbound port forwarding may not work; use a tunnel or obtain a reachable public address.
 
 The public endpoint must preserve Authorization headers, allow PUT/POST and up to 512 MB JAR uploads, and avoid caching private API responses. A proxy's upload limit or timeout can block larger mods.
 
 ## Check actual outside access
 
-**Running locally** is not proof that a friend can connect. On a phone with Wi-Fi disabled, open `https://YOUR-HOST/health`; it should return JSON identifying Hearth. Then have a friend on a different network install Hearth, request a pack, get approved, and press Play. Use **Hosting → Check connection** for the last successful player connection. That timestamp proves a player authenticated; confirm with the friend that their download completed. Finally reboot the host PC and repeat this check before opening Hearth to verify service and tunnel/proxy startup on your machine.
+**Running locally** is not proof that a friend can connect. On a phone with Wi-Fi disabled, open `https://YOUR-HOST/health`; it should return JSON identifying Hearth. Then have a friend on a different network install Hearth, request a pack, get approved, and press Play. Use **Hosting → Check connection** for the last successful player connection. That timestamp proves a player authenticated; confirm with the friend that their download completed. Finally reboot the host PC, sign in, and repeat this check after Hearth has started to verify your startup and tunnel/proxy settings. Quit Hearth and confirm the endpoint stops responding; reopen Hearth to resume hosting.
 
 ## Create, publish, and share
 
@@ -72,10 +72,12 @@ To manage from your main PC, install Hearth there and use **Hosting → Connect 
 
 ## Update Hearth itself
 
-Open **Settings → Updates → Check for updates**. Hearth uses [official releases](https://github.com/BigUziHert/Hearth/releases) automatically. When a newer version exists, read **What's new**, select **Download update**, then **Restart to update**. A verified download remains available when you navigate away and return. The installer preserves player and host data. Updating an enabled host service asks for administrator elevation.
+Open **Settings → Updates → Check for updates**. Hearth uses [official releases](https://github.com/BigUziHert/Hearth/releases) automatically. When a newer version exists, read **What's new**, select **Download update**, then **Restart to update**. A verified download remains available when you navigate away and return. The installer preserves player and host data. Hosting stops while Hearth restarts and resumes with the app if enabled.
+
+Upgrading from the old independent Windows service requires one administrator approval to stop and unregister it. The upgrade keeps its existing host data, releases, members, and owner key. Canceling that prompt cancels the upgrade before the app is replaced; the old service may still be running. Retry the installer and approve the conversion to complete the switch. Fresh hosting and later updates do not need this conversion.
 
 Hearth uses its official release source, including for profiles that previously saved a custom repository. Pack updates still come from each pack's host when you press Play. In **Settings → Minecraft**, **Choose existing Prism** connects an installation you already have. The **Help** section contains **Open data folder** and **Open guide**.
 
 ## Stop or move hosting
 
-**Hosting → Host on this PC → Stop hosting** removes the Windows service registration and preserves the packs. Enabling again reuses the existing host data and your saved owner credential. Uninstalling only the launcher leaves the independent service running. Stop hosting before uninstalling if you want it offline. Back up `%PROGRAMDATA%\Hearth\Host` with the service stopped and retain your owner key before moving to another PC.
+**Hosting → Host on this PC → Stop hosting** stops serving packs and turns off automatic hosting when Hearth opens. Enabling again reuses the existing host data and your saved owner credential. Quitting Hearth stops hosting without forgetting that it should resume next time. Uninstalling stops hosting and preserves data. Back up `%LOCALAPPDATA%\Hearth\Host` while hosting is stopped and retain your owner key before moving to another PC. A host migrated from the Windows service keeps its existing folder, normally `%PROGRAMDATA%\Hearth\Host`; back up that folder instead.

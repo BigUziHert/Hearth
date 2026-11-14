@@ -13,6 +13,12 @@ public sealed class ProfileState
     public string SelectedPackHost { get; set; } = "";
     public string SelectedPackId { get; set; } = "";
     public bool CloseToTray { get; set; }
+    public bool LocalHostingEnabled { get; set; }
+    public int LocalHostingPort { get; set; } = 17842;
+    public string LocalHostDataDirectory { get; set; } = "";
+    public string LocalHostOwnerToken { get; set; } = "";
+    public string LocalHostConnectionId { get; set; } = "";
+    public bool LegacyHostingMigrated { get; set; }
 }
 public sealed class ProfileStore
 {

@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.IO;
 using System.Security.Cryptography;
 using Hearth.Core;
@@ -7,45 +6,47 @@ namespace Hearth.App;
 
 public static class LocalHostingSetup
 {
-    public const string HostUrl = "http://127.0.0.1:17842";
-
-    // A null result means Windows elevation was canceled before setup started.
-    public static async Task<HostConnection?> EnableAsync(ProfileStore store, Func<string, Task> install,
-        Func<HostConnection, CancellationToken, Task> verify, CancellationToken cancellationToken = default)
+    public static async Task<HostConnection> EnableAsync(ProfileStore store, string hostUrl, string dataDirectory,
+        Func<string, CancellationToken, Task> start, CancellationToken cancellationToken = default)
     {
-        var local = store.State.Hosts.FirstOrDefault(host => host.Url == HostUrl);
-        var created = local == null;
-        if (local == null)
+        cancellationToken.ThrowIfCancellationRequested();
+        var state = store.State;
+        var local = state.Hosts.FirstOrDefault(host => host.Id == state.LocalHostConnectionId)
+            ?? state.Hosts.FirstOrDefault(host => host.Url == hostUrl);
+        if (string.IsNullOrEmpty(state.LocalHostOwnerToken))
         {
-            local = new(Guid.NewGuid().ToString("N"), "This PC", HostUrl,
-                Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant());
-            store.State.Hosts.Add(local);
-            // Preserve the owner key before setup can initialize host data. Other setup
-            // failures may happen after initialization, so they must retain this key.
+            // Keep the key separately: a failed first start must be recoverable
+            // without displaying a host that never became ready.
+            if (local == null && File.Exists(Path.Combine(dataDirectory, "host.json")))
+                throw new InvalidOperationException("Existing host data needs its original owner key. Paste that key under Host on this PC, then enable hosting.");
+            state.LocalHostOwnerToken = local?.OwnerToken
+                ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
             try { store.Save(); }
-            catch { store.State.Hosts.Remove(local); throw; }
+            catch { state.LocalHostOwnerToken = ""; throw; }
         }
 
-        var temporaryCredential = Path.Combine(store.Root, "host-owner-" + Guid.NewGuid().ToString("N") + ".tmp");
-        try
+        await start(state.LocalHostOwnerToken, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var ready = local == null
+            ? new HostConnection(Guid.NewGuid().ToString("N"), "This PC", hostUrl, state.LocalHostOwnerToken)
+            : local with { Url = hostUrl, OwnerToken = state.LocalHostOwnerToken };
+        var oldEnabled = state.LocalHostingEnabled;
+        var oldId = state.LocalHostConnectionId;
+        var oldMigration = state.LegacyHostingMigrated;
+        var index = local == null ? -1 : state.Hosts.IndexOf(local);
+        if (index < 0) state.Hosts.Add(ready); else state.Hosts[index] = ready;
+        state.LocalHostConnectionId = ready.Id;
+        state.LocalHostingEnabled = true;
+        state.LegacyHostingMigrated = true;
+        try { store.Save(); }
+        catch
         {
-            await File.WriteAllTextAsync(temporaryCredential, local.OwnerToken, cancellationToken);
-            try { await install(temporaryCredential); }
-            catch (Win32Exception exception) when (exception.NativeErrorCode == 1223)
-            {
-                // ERROR_CANCELLED from ShellExecute/runas means the script never ran.
-                // Only undo this attempt's new connection; existing hosts stay intact.
-                if (created)
-                {
-                    store.State.Hosts.Remove(local);
-                    try { store.Save(); }
-                    catch { store.State.Hosts.Add(local); throw; }
-                }
-                return null;
-            }
-            await verify(local, cancellationToken);
-            return local;
+            if (index < 0) state.Hosts.Remove(ready); else state.Hosts[index] = local!;
+            state.LocalHostingEnabled = oldEnabled;
+            state.LocalHostConnectionId = oldId;
+            state.LegacyHostingMigrated = oldMigration;
+            throw;
         }
-        finally { if (File.Exists(temporaryCredential)) File.Delete(temporaryCredential); }
+        return ready;
     }
 }

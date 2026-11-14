@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.ComponentModel;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -44,8 +43,8 @@ internal static class Program
         {
             CheckProfiles(Path.Combine(taskRoot, "migration"));
             CheckStartup();
-            var hostingChecks = CheckHostingCancellation(Path.Combine(taskRoot, "hosting"));
-            Await(() => hostingChecks.IsCompleted, "Hosting cancellation regression scenarios complete");
+            var hostingChecks = CheckHostingSetup(Path.Combine(taskRoot, "hosting"));
+            Await(() => hostingChecks.IsCompleted, "Hosting setup regression scenarios complete");
             hostingChecks.GetAwaiter().GetResult();
             CheckWindows(Path.Combine(taskRoot, "windows"));
             Console.WriteLine($"PASS: {checks} profile and WPF component checks.");
@@ -99,52 +98,64 @@ internal static class Program
         }
         finally { WindowsStartup.SetEnabled(root, false); }
     }
-    private static async Task CheckHostingCancellation(string taskRoot)
+    private static async Task CheckHostingSetup(string taskRoot)
     {
         var store = new ProfileStore(taskRoot);
-        var otherHost = new HostConnection("other", "Other host", "http://127.0.0.1:19123", "existing-other-key");
-        store.State.Hosts.Add(otherHost); store.Save();
-        var verifyCalls = 0;
-        Task Verify(HostConnection _, CancellationToken __) { verifyCalls++; return Task.CompletedTask; }
-        Task Cancel(string credentialPath)
+        const string url = "http://127.0.0.1:17842";
+        var directory = Path.Combine(taskRoot, "Host");
+        var other = new HostConnection("other", "Other host", "http://127.0.0.1:19123", "other-key");
+        store.State.Hosts.Add(other); store.Save();
+        string pendingKey = "";
+        Task Cancel(string key, CancellationToken cancellation)
         {
-            var pending = new ProfileStore(taskRoot).State.Hosts.Single(host => host.Url == LocalHostingSetup.HostUrl);
-            Check(File.ReadAllText(credentialPath) == pending.OwnerToken, "Owner key is recoverable before the elevated installer can run");
-            throw new Win32Exception(1223, "The operation was canceled by the user.");
+            pendingKey = key;
+            Check(new ProfileStore(taskRoot).State.LocalHostOwnerToken == key, "Owner key is durable before host initialization");
+            Check(!store.State.LocalHostingEnabled && store.State.Hosts.SequenceEqual([other]), "Starting a host does not prematurely enable it or add a connection");
+            throw new OperationCanceledException();
         }
-        var result = await LocalHostingSetup.EnableAsync(store, Cancel, Verify);
-        Check(result == null && verifyCalls == 0, "Canceling elevation is a normal result and never contacts a host");
-        Check(store.State.Hosts.SequenceEqual([otherHost]) && new ProfileStore(taskRoot).State.Hosts.SequenceEqual([otherHost]), "Canceling first setup removes only its new connection in memory and on disk");
-        Check(!Directory.EnumerateFiles(taskRoot, "host-owner-*.tmp").Any(), "Canceling elevation removes the temporary credential file");
-        result = await LocalHostingSetup.EnableAsync(store, Cancel, Verify);
-        Check(result == null && store.State.Hosts.Count == 1, "Repeated cancellation does not accumulate broken host entries");
+        try { await LocalHostingSetup.EnableAsync(store, url, directory, Cancel); throw new Exception("Expected cancellation"); }
+        catch (OperationCanceledException) { }
+        Check(!new ProfileStore(taskRoot).State.LocalHostingEnabled && store.State.Hosts.SequenceEqual([other]), "Canceled startup leaves hosting disabled without a broken host entry");
+        try { await LocalHostingSetup.EnableAsync(store, url, directory, (_, _) => throw new IOException("failed")); throw new Exception("Expected failure"); }
+        catch (IOException) { }
+        Check(new ProfileStore(taskRoot).State.LocalHostOwnerToken == pendingKey && store.State.Hosts.Count == 1, "Failed startup preserves its recovery key without adding a host");
+        var ready = await LocalHostingSetup.EnableAsync(store, url, directory, (key, _) =>
+        {
+            Check(key == pendingKey, "Retry reuses the original owner key"); return Task.CompletedTask;
+        });
+        Check(store.State.LocalHostingEnabled && store.State.LocalHostConnectionId == ready.Id && store.State.Hosts.Count == 2, "Verified startup enables hosting and adds exactly one connection");
+        await LocalHostingSetup.EnableAsync(store, url, directory, (_, _) => Task.CompletedTask);
+        Check(store.State.Hosts.Count == 2 && new ProfileStore(taskRoot).State.LocalHostConnectionId == ready.Id, "Repeated startup reuses the saved connection");
+        var encrypted = File.ReadAllBytes(Path.Combine(taskRoot, "profile.bin"));
+        Check(!Encoding.UTF8.GetString(encrypted).Contains(pendingKey), "Pending and active host credentials remain encrypted");
 
-        result = await LocalHostingSetup.EnableAsync(store, _ => Task.CompletedTask, Verify);
-        Check(result != null && verifyCalls == 1 && new ProfileStore(taskRoot).State.Hosts.Count == 2, "Retry after cancellation verifies and saves exactly one local host");
-        var savedProfile = File.ReadAllBytes(Path.Combine(taskRoot, "profile.bin"));
-        var previousLocal = result;
-        result = await LocalHostingSetup.EnableAsync(store, Cancel, Verify);
-        Check(result == null && store.State.Hosts.Contains(previousLocal!) && savedProfile.SequenceEqual(File.ReadAllBytes(Path.Combine(taskRoot, "profile.bin"))), "Canceling setup for an existing host preserves its exact saved connection and key");
+        var legacy = new ProfileStore(Path.Combine(taskRoot, "legacy"));
+        var oldHost = new HostConnection("old", "This PC", url, "original-owner-key");
+        legacy.State.Hosts.Add(oldHost);
+        await LocalHostingSetup.EnableAsync(legacy, url, directory, (key, _) =>
+        {
+            Check(key == oldHost.OwnerToken, "Existing saved hosts retain their original owner credential"); return Task.CompletedTask;
+        });
+        Check(legacy.State.Hosts.Single().Id == oldHost.Id, "Existing host migration does not duplicate its connection");
+        var lost = new ProfileStore(Path.Combine(taskRoot, "lost"));
+        Directory.CreateDirectory(directory); File.WriteAllText(Path.Combine(directory, "host.json"), "{}");
+        try { await LocalHostingSetup.EnableAsync(lost, url, directory, (_, _) => throw new Exception("Must not start")); throw new Exception("Expected missing key failure"); }
+        catch (InvalidOperationException) { }
+        Check(lost.State.LocalHostOwnerToken == "" && lost.State.Hosts.Count == 0, "Existing data without its owner key is never reinitialized with a new key");
 
-        var failedRoot = Path.Combine(taskRoot, "failed-setup");
-        var failedStore = new ProfileStore(failedRoot);
-        try
-        {
-            await LocalHostingSetup.EnableAsync(failedStore, _ => throw new IOException("Setup failed after initialization."), Verify);
-            throw new InvalidOperationException("A setup failure was treated as success.");
-        }
-        catch (IOException)
-        {
-            Check(new ProfileStore(failedRoot).State.Hosts.Single() == failedStore.State.Hosts.Single(), "A failure after setup starts keeps the owner key for recovery");
-            Check(!Directory.EnumerateFiles(failedRoot, "host-owner-*.tmp").Any(), "A setup failure also removes the temporary credential file");
-        }
-        var recoveryHost = failedStore.State.Hosts.Single();
-        await LocalHostingSetup.EnableAsync(failedStore, path =>
-        {
-            Check(File.ReadAllText(path) == recoveryHost.OwnerToken, "Retry after partial setup reuses the original owner key");
-            return Task.CompletedTask;
-        }, Verify);
-        Check(failedStore.State.Hosts.Count == 1, "Retry after partial setup never duplicates the host");
+        var migrated = new ProfileStore(Path.Combine(taskRoot, "migrated"));
+        migrated.State.Hosts.Add(oldHost);
+        var descriptor = Path.Combine(taskRoot, "retired-host.json");
+        File.WriteAllText(descriptor, JsonSerializer.Serialize(new { formatVersion = 1, ownerSid = "fixture-sid", dataDirectory = directory, port = 17842, wasRunning = false, wasEnabled = true }));
+        LegacyHostingMigration.AdoptDescriptor(migrated, descriptor, "different-sid");
+        Check(!migrated.State.LegacyHostingMigrated, "Legacy data adoption is restricted to the original Windows user");
+        LegacyHostingMigration.AdoptDescriptor(migrated, descriptor, "fixture-sid");
+        var reloaded = new ProfileStore(migrated.Root).State;
+        Check(reloaded.LocalHostingEnabled && reloaded.LocalHostDataDirectory == directory && reloaded.LocalHostOwnerToken == oldHost.OwnerToken && reloaded.Hosts.Single() == oldHost,
+            "Service migration adopts its original data, port, owner key, and enabled preference");
+        migrated.State.LocalHostingEnabled = false; migrated.Save();
+        LegacyHostingMigration.AdoptDescriptor(migrated, descriptor, "fixture-sid");
+        Check(!migrated.State.LocalHostingEnabled, "Reopening after migration respects the user's disabled preference");
     }
     private static T Named<T>(MainWindow window, string name) where T : FrameworkElement => (T)window.FindName(name);
     private static void Click(MainWindow window, string name) => Named<Button>(window, name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

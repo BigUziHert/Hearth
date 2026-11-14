@@ -2,10 +2,10 @@ Welcome to Hearth.
 
 Players: open Hearth and paste your pack invite. The owner approves you, then Hearth guides you through Prism setup before you play. Sign into Prism with your own Microsoft account that owns Minecraft Java.
 
-Owners: enable hosting from Hearth on your always-on PC. Windows asks for administrator permission only for the independent hosting service. It starts after reboots and stays running when Hearth closes.
+Owners: enable hosting from Hearth on your always-on PC. Hosting runs while Hearth is open or in the system tray, and stops when you quit. Fresh hosting needs no administrator permission. Use Settings > Startup & closing to choose close to tray and start with Windows after sign-in.
 
 Your Minecraft server is separate: Hearth hosts modpack files, not the shared world.
 
-An update or uninstall does not delete your personal Minecraft instances, Prism account data, or hosted pack data. Disable Hosting before uninstalling if you want the background service to stop.
+An update or uninstall does not delete your personal Minecraft instances, Prism account data, or hosted pack data. Upgrading an old Windows host service asks once for administrator permission to retire it and keep its data. Canceling that prompt cancels the upgrade; the old host may still be running until you complete the conversion.
 
 The short first-run guide is installed in the docs folder.
