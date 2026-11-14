@@ -2,7 +2,7 @@
 
 ## Join and play
 
-1. Install `Hearth-Setup-1.0.2-win-x64.exe` and open Hearth.
+1. Install `Hearth-Setup-1.0.3-win-x64.exe` and open Hearth.
 2. Select **Add modpack**, paste your friend's `hearth://join?...` invite, enter the name they know you by, and select **Request access**. You can also open an invite directly after installing Hearth.
 3. Select the pack in the sidebar. Open **⋯ → Member details & fingerprint** and tell the owner your name and fingerprint so they approve the correct request. Select **Check approval** after they approve you.
 4. The main button becomes **Set up Prism** if Minecraft setup is needed. Hearth downloads and verifies the official portable Windows launcher. Finish Prism's first-run wizard, then use **Settings → Accounts → Add Microsoft** inside Prism. Sign in with your own account that owns Minecraft Java and let Prism configure Java. You can reopen Prism from Hearth's **Settings → Open Prism**.
@@ -63,9 +63,9 @@ To manage from your main PC, install Hearth there and use **Hosting → Connect 
 
 ## Update Hearth itself
 
-Select the footer's **Check for updates**, or open **Settings → Updates**. Hearth uses [official releases](https://github.com/BigUziHert/Hearth/releases) automatically. When a newer version exists, read **What's new**, select **Download update**, then **Restart to update**. A verified download remains available when you navigate away and return. The installer preserves player and host data. Updating an enabled host service asks for administrator elevation.
+Open **Settings → Updates → Check for updates**. Hearth uses [official releases](https://github.com/BigUziHert/Hearth/releases) automatically. When a newer version exists, read **What's new**, select **Download update**, then **Restart to update**. A verified download remains available when you navigate away and return. The installer preserves player and host data. Updating an enabled host service asks for administrator elevation.
 
-Existing custom repositories remain unchanged. For a fork, **Settings → Advanced settings → Custom update source** accepts `owner/repository`; **Use official releases** restores the normal channel. Pack updates still come from each pack's host when you press Play. Publishing your own launcher releases is documented in the source README.
+Hearth uses its official release source, including for profiles that previously saved a custom repository. Pack updates still come from each pack's host when you press Play. In **Settings → Minecraft**, **Choose existing Prism** connects an installation you already have. The **Help** section contains **Open data folder** and **Open guide**.
 
 ## Stop or move hosting
 

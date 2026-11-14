@@ -1,7 +1,6 @@
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Hearth.Core;
 
 namespace Hearth.App;
@@ -10,11 +9,6 @@ public sealed class ProfileState
     public string DisplayName { get; set; } = Environment.UserName;
     public List<HostConnection> Hosts { get; set; } = [];
     public List<JoinedPack> Packs { get; set; } = [];
-    public string UpdateRepository { get; set; } = "";
-    // Empty in both existing and new profiles means the app's official source.
-    // Explicit custom values are preserved across application upgrades.
-    [JsonIgnore] public string EffectiveUpdateRepository => string.IsNullOrWhiteSpace(UpdateRepository) ? AppInfo.DefaultUpdateRepository : UpdateRepository.Trim();
-    [JsonIgnore] public bool UsesOfficialUpdateRepository => EffectiveUpdateRepository.Equals(AppInfo.DefaultUpdateRepository, StringComparison.OrdinalIgnoreCase);
     public string PrismExecutable { get; set; } = "";
     public string SelectedPackHost { get; set; } = "";
     public string SelectedPackId { get; set; } = "";

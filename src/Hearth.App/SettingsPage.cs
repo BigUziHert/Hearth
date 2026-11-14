@@ -9,21 +9,16 @@ public partial class MainWindow
 {
     private UpdateRelease? availableLauncherUpdate;
     private string? downloadedLauncherUpdatePath;
-    private string launcherUpdateSource = "";
     private string launcherUpdateMessage = "";
 
-    private void ShowSettings(bool checkForUpdates = false)
+    private void ShowSettings()
     {
         PageStart("settings", "Settings", "HEARTH");
-        var source = store.State.EffectiveUpdateRepository;
-        if (!launcherUpdateSource.Equals(source, StringComparison.OrdinalIgnoreCase))
-        {
-            launcherUpdateSource = source; availableLauncherUpdate = null; downloadedLauncherUpdatePath = null; launcherUpdateMessage = "";
-        }
+        const string source = AppInfo.DefaultUpdateRepository;
         if (downloadedLauncherUpdatePath != null && (!File.Exists(downloadedLauncherUpdatePath) || !File.Exists(downloadedLauncherUpdatePath + ".sha256"))) downloadedLauncherUpdatePath = null;
 
         var updates = Card("Updates", $"Hearth {AppInfo.Version}");
-        updates.Children.Add(Text(store.State.UsesOfficialUpdateRepository ? "Official Hearth releases" : "Custom update source · " + source, 13, false, "#A4AFAA"));
+        updates.Children.Add(Text("Official Hearth releases", 13, false, "#A4AFAA"));
         var updateMessage = Text("", 14); updates.Children.Add(updateMessage);
         var releaseNotes = new Expander { Header = "What's new", Margin = new(0, 3, 0, 10), Visibility = Visibility.Collapsed };
         updates.Children.Add(releaseNotes);
@@ -70,7 +65,7 @@ public partial class MainWindow
                 }
                 catch (ReleaseUnavailableException)
                 {
-                    launcherUpdateMessage = store.State.UsesOfficialUpdateRepository ? "No Hearth release has been published yet. Check again later." : "This source has no public release yet. Check the repository in Advanced settings.";
+                    launcherUpdateMessage = "No Hearth release has been published yet. Check again later.";
                     Status(launcherUpdateMessage);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { launcherUpdateMessage = "Update check cancelled. You can try again."; throw; }
@@ -110,6 +105,12 @@ public partial class MainWindow
         minecraft.Children.Add(Text("Use your own Microsoft account in Prism. Hearth keeps your packs in separate instances.", 13, false, "#A4AFAA"));
         if (AvailablePrismExe() == null) minecraft.Children.Add(Row(Button("Set up Prism", () => _ = InstallPrism())));
         else minecraft.Children.Add(Row(Button("Open Prism", () => _ = Run("Opening Prism…", _ => { prism.Open(PrismExe()); Status("Manage your Minecraft account in Prism → Settings → Accounts."); return Task.CompletedTask; }), true)));
+        minecraft.Children.Add(Row(Button("Choose existing Prism…", () =>
+        {
+            var dialog = new OpenFileDialog { Filter = "Prism Launcher|prismlauncher.exe" };
+            if (dialog.ShowDialog(this) != true) return;
+            prism.SetExecutable(dialog.FileName); store.State.PrismExecutable = dialog.FileName; store.Save(); ShowSettings(); Status("Prism installation saved.");
+        }, true)));
 
         var profile = Card("Profile");
         var displayName = Field(profile, "Name shown to pack owners", store.State.DisplayName);
@@ -120,30 +121,7 @@ public partial class MainWindow
             Status("Name saved. New access requests will use this name.");
         }, true)));
 
-        var advancedBody = new StackPanel { Margin = new(0, 14, 0, 0) };
-        var customSource = Field(advancedBody, "Custom update source", store.State.UpdateRepository, "For a fork of Hearth, use its public GitHub owner/repository. Leave official releases enabled for the normal app.");
-        advancedBody.Children.Add(Text("Official source: " + AppInfo.DefaultUpdateRepository, 12, false, "#A4AFAA"));
-        advancedBody.Children.Add(Row(Button("Use custom source", () =>
-        {
-            try { store.State.UpdateRepository = GithubUpdater.NormalizeRepository(customSource.Text); store.Save(); ShowSettings(); Status("Custom update source saved."); }
-            catch (ArgumentException exception) { Status(exception.Message); customSource.Focus(); }
-        }, true), Button("Use official releases", () => { store.State.UpdateRepository = ""; store.Save(); ShowSettings(); Status("Official Hearth updates enabled."); }, true)));
-        advancedBody.Children.Add(Text("Prism installation", 12, true));
-        advancedBody.Children.Add(Text(AvailablePrismExe() ?? "Prism has not been set up.", 12, false, "#A4AFAA"));
-        advancedBody.Children.Add(Row(Button("Choose existing Prism…", () =>
-        {
-            var dialog = new OpenFileDialog { Filter = "Prism Launcher|prismlauncher.exe" };
-            if (dialog.ShowDialog(this) != true) return;
-            prism.SetExecutable(dialog.FileName); store.State.PrismExecutable = dialog.FileName; store.Save(); ShowSettings(); Status("Prism installation saved.");
-        }, true), Button("Open data folder", () => OpenFolder(store.Root), true), Button("Open guide", OpenGuide, true)));
-        var advanced = Card("");
-        advanced.Children.Add(new Expander { Header = "Advanced settings", IsExpanded = false, Content = advancedBody });
-
-        if (checkForUpdates) Dispatcher.BeginInvoke(new Action(() =>
-        {
-            if (activePage != "settings") return;
-            updates.BringIntoView();
-            _ = CheckUpdate();
-        }), System.Windows.Threading.DispatcherPriority.Loaded);
+        var help = Card("Help");
+        help.Children.Add(Row(Button("Open guide", OpenGuide, true), Button("Open data folder", () => OpenFolder(store.Root), true)));
     }
 }

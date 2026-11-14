@@ -9,12 +9,12 @@ The same installer contains the launcher and an optional independent Windows hos
 ## Start here
 
 - [Download the latest Windows installer](https://github.com/BigUziHert/Hearth/releases/latest)
-- Local installer: `artifacts/Hearth-Setup-1.0.2-win-x64.exe`
-- Local source archive: `artifacts/Hearth-Source-1.0.2.zip`
+- Local installer: `artifacts/Hearth-Setup-1.0.3-win-x64.exe`
+- Local source archive: `artifacts/Hearth-Source-1.0.3.zip`
 - [First-time hosting, publishing, and joining](docs/FIRST-RUN.md)
 - [Verification and remaining manual checks](docs/VERIFICATION.md)
 - [HTTP protocol and host data](docs/HOST-PROTOCOL.md)
-- [Changes in 1.0.2](docs/RELEASE-NOTES-1.0.2.md)
+- [Changes in 1.0.3](docs/RELEASE-NOTES-1.0.3.md)
 
 ## Build and run
 
@@ -59,16 +59,16 @@ Only declared `mods/*.jar` files are managed. Downloads are checked by length an
 
 ## Launcher releases
 
-The default update source is [BigUziHert/Hearth](https://github.com/BigUziHert/Hearth). New and existing profiles with no custom source use it automatically. Explicit custom sources remain unchanged; forks can set their repository in **Settings → Advanced settings**.
+Hearth checks [official releases](https://github.com/BigUziHert/Hearth) from **Settings → Updates**. Legacy custom-source settings are ignored; pack credentials and player preferences are preserved.
 
 The [Windows release workflow](.github/workflows/windows-release.yml) builds and tests pull requests and main-branch changes. A `v*` tag also publishes a complete stable GitHub release after all checks pass. To release a later version:
 
 1. Set `Directory.Build.props` to the new version, update script defaults and add `docs/RELEASE-NOTES-VERSION.md`.
-2. Commit and push the source, then push a matching tag such as `v1.0.3`. Tag and source version must match exactly.
-3. The workflow builds `Hearth-Setup-1.0.3-win-x64.exe`, a source ZIP, and `SHA256SUMS.txt`; uploads them to a draft; verifies the expected installer; and publishes the complete release.
-4. In an older Hearth, use **Check for updates → Download update → Restart to update**.
+2. Commit and push the source, then push a matching tag such as `v1.0.4`. Tag and source version must match exactly.
+3. The workflow builds `Hearth-Setup-1.0.4-win-x64.exe`, a source ZIP, and `SHA256SUMS.txt`; uploads them to a draft; verifies the expected installer; and publishes the complete release.
+4. In an older Hearth, open **Settings → Updates**, then use **Check for updates → Download update → Restart to update**.
 
-For a manual release, run `scripts/build.ps1 -Version 1.0.3` after changing the source version, then upload the resulting installer, source ZIP, and checksums to a stable `v1.0.3` release. The release must contain exactly one Windows installer whose version matches the tag. Do not replace files in a published release; publish a higher version.
+For a manual release, run `scripts/build.ps1 -Version 1.0.4` after changing the source version, then upload the resulting installer, source ZIP, and checksums to a stable `v1.0.4` release. The release must contain exactly one Windows installer whose version matches the tag. Do not replace files in a published release; publish a higher version.
 
 The updater checks the GitHub asset digest or exact filename in SHA256SUMS, verifies bytes before saving and again before executing, and reuses a verified cached download. Installer updates preserve profiles, Prism instances, and hosted packs. Updating an enabled service requires elevation. Installers are unsigned until a code-signing certificate is configured.
 

@@ -49,25 +49,25 @@ internal static class Program
     private static void CheckProfiles(string taskRoot)
     {
         Directory.CreateDirectory(taskRoot);
-        Check(new ProfileState().EffectiveUpdateRepository == "BigUziHert/Hearth", "New profiles use official Hearth updates without setup");
-        var oldProfile = new { displayName = "Test player", updateRepository = "", prismExecutable = "", hosts = Array.Empty<object>(), packs = new[] { new JoinedPack("http://127.0.0.1:17842", "fixture-pack", "Fixture pack", "local-test-token", "member", TerrainMode.Voxy) } };
+        Check(!JsonSerializer.Serialize(new ProfileState(), JsonDefaults.Options).Contains("updateRepository", StringComparison.OrdinalIgnoreCase), "New profiles do not store an update-source override");
+        var host = new HostConnection("fixture-host", "Fixture host", "http://127.0.0.1:17842", "local-owner-token");
+        var oldProfile = new { displayName = "Test player", updateRepository = "someone/custom", prismExecutable = "fixture-prism.exe", selectedPackHost = host.Url, selectedPackId = "fixture-pack", hosts = new[] { host }, packs = new[] { new JoinedPack(host.Url, "fixture-pack", "Fixture pack", "local-test-token", "member", TerrainMode.Voxy) } };
         var legacyBytes = JsonSerializer.SerializeToUtf8Bytes(oldProfile, JsonDefaults.Options);
         var path = Path.Combine(taskRoot, "profile.bin");
         File.WriteAllBytes(path, ProtectedData.Protect(legacyBytes, null, DataProtectionScope.CurrentUser));
         var before = File.ReadAllBytes(path);
         var store = new ProfileStore(taskRoot);
-        Check(store.State.EffectiveUpdateRepository == "BigUziHert/Hearth", "Legacy empty update source resolves to official releases");
         Check(File.ReadAllBytes(path).SequenceEqual(before), "Reading a legacy profile does not rewrite its encrypted bytes");
         Check(store.State.Packs.Single().Terrain == TerrainMode.Voxy && store.State.Packs.Single().Token == "local-test-token", "Existing pack credential and terrain choice survive legacy profile loading");
-        store.State.UpdateRepository = "someone/custom"; store.Save();
+        Check(store.State.DisplayName == "Test player" && store.State.PrismExecutable == "fixture-prism.exe" && store.State.SelectedPackHost == host.Url && store.State.SelectedPackId == "fixture-pack", "Player preferences survive a legacy custom-source profile");
+        Check(store.State.Hosts.Single() == host, "Host connection and owner credential survive legacy profile loading");
+        store.State.DisplayName = "Renamed player"; store.Save();
         var reloaded = new ProfileStore(taskRoot);
-        Check(reloaded.State.EffectiveUpdateRepository == "someone/custom", "Explicit custom update repository survives encrypted save and reload");
-        Check(!reloaded.State.UsesOfficialUpdateRepository, "Custom source is identified separately from the official channel");
+        Check(reloaded.State.DisplayName == "Renamed player", "Ordinary profile changes still save after loading legacy settings");
         var decoded = Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(path), null, DataProtectionScope.CurrentUser));
         using var document = JsonDocument.Parse(decoded);
-        Check(!document.RootElement.TryGetProperty("effectiveUpdateRepository", out _) && !document.RootElement.TryGetProperty("usesOfficialUpdateRepository", out _), "Computed update defaults are not serialized as user overrides");
-        reloaded.State.UpdateRepository = ""; reloaded.Save();
-        Check(new ProfileStore(taskRoot).State.UsesOfficialUpdateRepository, "Resetting the source restores official updates");
+        Check(!document.RootElement.TryGetProperty("updateRepository", out _) && !document.RootElement.TryGetProperty("effectiveUpdateRepository", out _) && !document.RootElement.TryGetProperty("usesOfficialUpdateRepository", out _), "Legacy custom update source is ignored and omitted on the next profile save");
+        Check(reloaded.State.Packs.Single().Terrain == TerrainMode.Voxy && reloaded.State.Packs.Single().Token == "local-test-token" && reloaded.State.Hosts.Single() == host, "Existing pack and host preferences survive encrypted save and reload");
         Check(!Encoding.UTF8.GetString(File.ReadAllBytes(path)).Contains("local-test-token", StringComparison.Ordinal), "Saved profile does not expose the member credential as plaintext");
     }
     private static T Named<T>(MainWindow window, string name) where T : FrameworkElement => (T)window.FindName(name);
@@ -82,7 +82,8 @@ internal static class Program
         content.Measure(new Size(width, height)); content.Arrange(new Rect(0, 0, width, height)); content.UpdateLayout();
         var image = new RenderTargetBitmap((int)width, (int)height, 96, 96, PixelFormats.Pbgra32); image.Render(content);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
-        using var file = File.Create(Path.Combine(output, "1.0.2-" + name + ".png")); encoder.Save(file);
+        var version = typeof(MainWindow).Assembly.GetName().Version!.ToString(3);
+        using var file = File.Create(Path.Combine(output, version + "-" + name + ".png")); encoder.Save(file);
     }
     private static void Await(Func<bool> condition, string description)
     {
@@ -121,7 +122,7 @@ internal static class Program
             Check(((SolidColorBrush)Named<Button>(empty, "HostsNav").Background).Color != ((SolidColorBrush)Named<Button>(empty, "PublishNav").Background).Color, "Hosting route visibly selects its own navigation item");
             Capture(empty, "hosting");
             Click(empty, "SettingsNav");
-            Check(Descendants(empty).OfType<TextBlock>().Any(text => text.Text == "Official Hearth releases"), "Settings shows the official update channel without repository configuration");
+            Check(Descendants(empty).OfType<TextBlock>().Any(text => text.Text == "Official Hearth releases") && Descendants(empty).OfType<Button>().Count(button => button.Content is string text && text == "Check for updates") == 1, "Settings shows one update action for official Hearth releases");
             Capture(empty, "settings");
         }
         finally { empty.Close(); }

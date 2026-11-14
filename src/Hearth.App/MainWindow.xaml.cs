@@ -89,14 +89,14 @@ public partial class MainWindow : Window
     private void Status(string text) { StatusText.Text = text; StatusText.ToolTip = text; }
     private async Task Run(string label, Func<CancellationToken, Task> work)
     {
-        if (busy) return; busy = true; operation = new(); MainContent.IsEnabled = SidebarPanel.IsEnabled = UpdatesButton.IsEnabled = false;
+        if (busy) return; busy = true; operation = new(); MainContent.IsEnabled = SidebarPanel.IsEnabled = false;
         Progress.Visibility = CancelButton.Visibility = Visibility.Visible; Status(label);
         try { await work(operation.Token); }
         catch (OperationCanceledException) { Status("Cancelled. No incomplete release was applied."); }
         catch (Exception ex) { Status(ex.Message); MessageBox.Show(this, ex.Message, "Hearth", MessageBoxButton.OK, MessageBoxImage.Information); }
         finally
         {
-            busy = false; operation.Dispose(); operation = null; MainContent.IsEnabled = SidebarPanel.IsEnabled = UpdatesButton.IsEnabled = true;
+            busy = false; operation.Dispose(); operation = null; MainContent.IsEnabled = SidebarPanel.IsEnabled = true;
             Progress.Visibility = CancelButton.Visibility = Visibility.Collapsed;
             if (inviteQueued) { inviteQueued = false; ShowAddPack(); }
         }
@@ -107,7 +107,6 @@ public partial class MainWindow : Window
     private void Hosts_Click(object sender, RoutedEventArgs e) => ShowHosts();
     private void Settings_Click(object sender, RoutedEventArgs e) => ShowSettings();
     private void Cancel_Click(object sender, RoutedEventArgs e) => operation?.Cancel();
-    private void Updates_Click(object sender, RoutedEventArgs e) => ShowSettings(true);
     private void SetupPrism_Click(object sender, RoutedEventArgs e) => _ = InstallPrism();
     public void OpenInvite(string value) { pendingInvite = value; if (!busy) ShowAddPack(); else { inviteQueued = true; Status("Your invite will open when the current operation finishes."); } }
     private string? AvailablePrismExe() => File.Exists(store.State.PrismExecutable) ? store.State.PrismExecutable : prism.FindExecutable();
