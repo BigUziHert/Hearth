@@ -139,21 +139,26 @@ public partial class MainWindow
         RenderUpdate();
 
         var minecraft = Card("Minecraft", AvailablePrismExe() == null ? "Set up Prism to launch your packs." : "Prism is ready to launch your packs.");
-        minecraft.Children.Add(Text("Use your own Microsoft account in Prism. Hearth keeps your packs in separate instances.", 13, false, "#A4AFAA"));
+        minecraft.Children.Add(Text("Sign in with your own Microsoft account in Prism → Settings → Accounts. Close Prism before returning here to press Play.", 13, false, "#A4AFAA"));
         if (AvailablePrismExe() == null) minecraft.Children.Add(Row(Button("Set up Prism", () => _ = InstallPrism())));
         else minecraft.Children.Add(Row(Button("Open Prism", () => _ = Run("Opening Prism…", _ => { prism.Open(PrismExe()); Status("Manage your Minecraft account in Prism → Settings → Accounts."); return Task.CompletedTask; }), true)));
         minecraft.Children.Add(Row(Button("Choose existing Prism…", () =>
         {
             var dialog = new OpenFileDialog { Filter = "Prism Launcher|prismlauncher.exe" };
             if (dialog.ShowDialog(this) != true) return;
-            prism.SetExecutable(dialog.FileName); store.State.PrismExecutable = dialog.FileName; store.Save(); ShowSettings(); Status("Prism installation saved.");
+            _ = Run("Saving Prism installation…", _ =>
+            {
+                prism.SetExecutable(dialog.FileName); store.State.PrismExecutable = dialog.FileName; store.Save(); ShowSettings();
+                Status("Prism installation saved. Open Prism here to sign in, then close it before pressing Play."); return Task.CompletedTask;
+            });
         }, true)));
 
         var profile = Card("Profile");
         var displayName = Field(profile, "Name shown to pack owners", store.State.DisplayName);
+        displayName.MaxLength = 80;
         profile.Children.Add(Row(Button("Save name", () =>
         {
-            if (string.IsNullOrWhiteSpace(displayName.Text)) { Status("Enter the name your friends know you by."); displayName.Focus(); return; }
+            if (string.IsNullOrWhiteSpace(displayName.Text) || displayName.Text.Trim().Length > 80) { Status("Enter the name your friends know you by, using 1–80 characters."); displayName.Focus(); return; }
             store.State.DisplayName = displayName.Text.Trim(); store.Save(); ProfileLabel.Text = store.State.DisplayName.ToUpperInvariant();
             Status("Name saved. New access requests will use this name.");
         }, true)));

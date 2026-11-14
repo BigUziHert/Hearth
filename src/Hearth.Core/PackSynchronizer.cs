@@ -14,6 +14,7 @@ public record InstalledPack(string HostUrl, string PackId, string ReleaseId, Ter
 /// <summary>Stages verified downloads first, then applies a journaled transaction to owned files only.</summary>
 public sealed class PackSynchronizer
 {
+    private const string RecordRecovery = "The saved pack record is missing or damaged. Restore .hearth/installed.json from a backup, or move this instance folder aside before installing again. Your worlds and settings haven't been changed.";
     public string ProfileRoot { get; }
     public PackSynchronizer(string profileRoot) => ProfileRoot = Path.GetFullPath(profileRoot);
     public string GetInstanceId(string hostUrl, string packId) => "hearth-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(HearthApi.NormalizeHost(hostUrl) + "\n" + packId)))[..24];
@@ -21,7 +22,9 @@ public sealed class PackSynchronizer
     public InstalledPack? GetInstalled(string hostUrl, string packId)
     {
         var path = Path.Combine(GetInstanceDirectory(hostUrl, packId), ".hearth", "installed.json");
-        return File.Exists(path) ? Read<InstalledPack>(path) : null;
+        try { return File.Exists(path) ? Read<InstalledPack>(path) : null; }
+        catch (Exception exception) when (exception is JsonException or InvalidDataException)
+        { throw new IOException(RecordRecovery, exception); }
     }
     public Task RecoverAsync(string hostUrl, string packId, CancellationToken ct = default)
     {
@@ -33,6 +36,73 @@ public sealed class PackSynchronizer
         using var syncLock = AcquireLock(instance);
         Recover(instance);
         return Task.CompletedTask;
+    }
+    public async Task<InstalledPack> VerifyInstalledAsync(string hostUrl, string packId, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var instance = GetInstanceDirectory(hostUrl, packId);
+        RejectLinks(Path.Combine(instance, ".hearth"));
+        PrismService.EnsureNotRunning(instance);
+        Directory.CreateDirectory(Path.Combine(instance, ".hearth"));
+        using var syncLock = AcquireLock(instance);
+        Recover(instance);
+        const string repair = "The installed copy needs repair. Connect to its host and press Play to restore the pack before using Play installed. Your worlds and settings have been kept.";
+        const string recordRecovery = RecordRecovery;
+        InstalledPack installed;
+        byte[] desiredMetadata;
+        try
+        {
+            installed = GetInstalled(hostUrl, packId) ?? throw new InvalidDataException(recordRecovery);
+            if (installed.Manifest is null || installed.Files is null || installed.Manifest.Files is null
+                || installed.Files.Any(file => file is null) || installed.Manifest.Files.Any(file => file is null)
+                || installed.PackId != packId || installed.HostUrl != HearthApi.NormalizeHost(hostUrl)
+                || string.IsNullOrWhiteSpace(installed.ReleaseId) || installed.Manifest.PackId != packId
+                || installed.Manifest.ReleaseId != installed.ReleaseId)
+                throw new InvalidDataException(recordRecovery);
+            var expected = ModFiles.Select(installed.Manifest, installed.Terrain);
+            if (installed.Files.Count != expected.Count || !installed.Files.OrderBy(f => f.Path, StringComparer.OrdinalIgnoreCase).SequenceEqual(expected))
+                throw new InvalidDataException(recordRecovery);
+            desiredMetadata = CreatePrismMetadata(installed.Manifest);
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidDataException or InvalidOperationException or ArgumentException)
+        {
+            // Without this record, online Play cannot safely identify managed files.
+            // Never promise automatic repair or guess ownership from filenames.
+            throw new IOException(recordRecovery, exception);
+        }
+        try
+        {
+            foreach (var file in installed.Files)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!await ModFiles.MatchesAsync(OwnedPath(instance, ".minecraft/" + file.Path), file, ct))
+                    throw new InvalidDataException(repair);
+            }
+            var metadata = OwnedPath(instance, "mmc-pack.json");
+            if (!File.Exists(metadata) || !File.Exists(OwnedPath(instance, "instance.cfg"))) throw new InvalidDataException(repair);
+            // Prism's Minecraft/loader definition is managed too. An absent or
+            // damaged file must not turn offline play into a broken or vanilla launch.
+            using var actual = JsonDocument.Parse(await File.ReadAllBytesAsync(metadata, ct));
+            using var desired = JsonDocument.Parse(desiredMetadata);
+            if (!actual.RootElement.TryGetProperty("formatVersion", out var format) || !format.TryGetInt32(out var formatNumber) || formatNumber != 1
+                || !actual.RootElement.TryGetProperty("components", out var components) || components.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException(repair);
+            // Prism enriches this document with cached names, versions, and
+            // automatic components. Check our pinned components, not its cache fields.
+            foreach (var component in desired.RootElement.GetProperty("components").EnumerateArray())
+            {
+                var matching = components.EnumerateArray().Where(candidate => candidate.TryGetProperty("uid", out var uid)
+                    && uid.ValueKind == JsonValueKind.String && uid.GetString() == component.GetProperty("uid").GetString()).ToArray();
+                if (matching.Length != 1 || !matching[0].TryGetProperty("version", out var version)
+                    || version.ValueKind != JsonValueKind.String || version.GetString() != component.GetProperty("version").GetString())
+                    throw new InvalidDataException(repair);
+            }
+            return installed;
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidDataException or InvalidOperationException or ArgumentException)
+        {
+            throw new IOException(repair, exception);
+        }
     }
     public async Task<SyncResult> SyncAsync(HearthApi api, JoinedPack pack, IProgress<SyncProgress>? progress = null, CancellationToken ct = default)
     {
@@ -51,7 +121,7 @@ public sealed class PackSynchronizer
         var installed = GetInstalled(pack.HostUrl, pack.PackId);
         if (installed is not null)
         {
-            if (installed.PackId != pack.PackId || installed.HostUrl != HearthApi.NormalizeHost(pack.HostUrl)) throw new InvalidDataException("Local installation metadata does not match this pack.");
+            if (installed.PackId != pack.PackId || installed.HostUrl != HearthApi.NormalizeHost(pack.HostUrl)) throw new InvalidDataException(RecordRecovery);
             foreach (var file in installed.Files) ModFiles.Validate(file);
         }
         var previous = (installed?.Files ?? []).ToDictionary(f => f.Path, StringComparer.OrdinalIgnoreCase);

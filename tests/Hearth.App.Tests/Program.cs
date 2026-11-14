@@ -47,6 +47,8 @@ internal static class Program
             Await(() => hostingChecks.IsCompleted, "Hosting setup regression scenarios complete");
             hostingChecks.GetAwaiter().GetResult();
             CheckWindows(Path.Combine(taskRoot, "windows"));
+            OwnerFlowChecks.Run(Path.Combine(taskRoot, "owner-flow"), Check, Await);
+            HostingMigrationFlowChecks.Run(Path.Combine(taskRoot, "migration-flow"), Check);
             Console.WriteLine($"PASS: {checks} profile and WPF component checks.");
         }
         finally { app.Shutdown(); Directory.Delete(taskRoot, recursive: true); }

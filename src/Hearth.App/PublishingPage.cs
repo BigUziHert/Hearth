@@ -172,6 +172,7 @@ public partial class MainWindow
         loader.SelectionChanged += (_, _) => { if (!populating) _ = LoadLoaders(); };
         mc.AddHandler(TextBox.TextChangedEvent, new TextChangedEventHandler((_, _) => { if (!populating) _ = LoadLoaders(); }));
         _ = LoadMinecraft();
+        _ = LoadLoaders();
         async Task LoadMinecraft()
         {
             try
@@ -181,7 +182,6 @@ public partial class MainWindow
                 populating = true; var current = mc.Text; mc.ItemsSource = versions; mc.Text = current; populating = false;
             }
             catch (Exception) { if (form.IsDescendantOf(Page)) versionStatus.Text = "Enter your server's Minecraft and loader versions."; }
-            if (form.IsDescendantOf(Page)) await LoadLoaders();
         }
     }
 
@@ -226,7 +226,7 @@ public partial class MainWindow
         PackEditorHeader("mods"); var pack = selectedPack;
         var editor = Card("Mods", $"Minecraft {pack.MinecraftVersion} · {LoaderName(pack.Loader)} {pack.LoaderVersion} · {(pack.ReleaseId == null ? "Not published" : "Published")}");
         if (draft.BaseReleaseId != published?.ReleaseId)
-            editor.Children.Add(Text("A newer release was published on another PC. Discard this draft and reopen the current release before publishing.", 13, false, "#D8B36B"));
+            editor.Children.Add(Text("A newer release is available. Your draft has been kept. Discard this draft to reopen the current release before publishing.", 13, false, "#D8B36B"));
         var modActions = Row(Button("Add mods…", () => ChooseMods("base"))); editor.Children.Add(modActions);
         fileList = new ListBox { MinHeight = 130, MaxHeight = 330, SelectionMode = SelectionMode.Extended, AllowDrop = true };
         fileList.DragOver += (_, e) => { e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
@@ -268,7 +268,7 @@ public partial class MainWindow
         options.Children.Add(Row(Button("Open in my library", OpenOwnedPack, true), Button("Discard draft", () =>
         {
             if (MessageBox.Show(this, "Discard your unpublished changes and reopen the current release?", "Discard draft", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-            File.Delete(DraftPath()); _ = OpenEditor(pack);
+            _ = ResetDraft();
         }, true)));
         release.Children.Add(new Expander { Header = "Pack options", Content = options, Margin = new(0, 15, 0, 0) });
         RefreshDraft();
@@ -282,9 +282,26 @@ public partial class MainWindow
     private void OpenOwnedPack()
     {
         var host = selectedHost!; var pack = selectedPack!;
-        if (!store.State.Packs.Any(p => p.HostUrl == host.Url && p.PackId == pack.Id)) store.State.Packs.Add(new(host.Url, pack.Id, pack.Name, host.OwnerToken, "owner"));
+        var index = store.State.Packs.FindIndex(p => p.HostUrl == host.Url && p.PackId == pack.Id);
+        var joined = new JoinedPack(host.Url, pack.Id, pack.Name, host.OwnerToken, "owner",
+            index < 0 ? TerrainMode.Off : store.State.Packs[index].Terrain);
+        // A host owner may already have joined through their own invitation.
+        // Replace that pending/revoked credential without changing the instance.
+        if (index < 0) store.State.Packs.Add(joined); else store.State.Packs[index] = joined;
         store.State.SelectedPackHost = host.Url; store.State.SelectedPackId = pack.Id; store.Save(); ShowLibrary();
     }
+    private async Task ResetDraft() => await Run("Loading the current release…", async ct =>
+    {
+        var host = selectedHost!; var pack = selectedPack!;
+        using var api = new HearthApi(host.Url, host.OwnerToken);
+        var latestPack = (await api.ListPacksAsync(ct)).FirstOrDefault(p => p.Id == pack.Id)
+            ?? throw new InvalidOperationException("This pack is no longer available to this owner.");
+        var latest = latestPack.ReleaseId == null ? null : await api.ManifestAsync(pack.Id, ct);
+        // Do not discard the only saved draft until its replacement is available.
+        selectedPack = latestPack; published = latest;
+        draft = new() { BaseReleaseId = latest?.ReleaseId, Files = latest?.Files.Select(f => new DraftItem(f, null)).ToList() ?? [] };
+        SaveDraft(); RenderEditor(); Status("Draft reset to the current release.");
+    });
     private async Task AddFiles(string[] paths, DraftItem? replacing = null, string? groupOverride = null) => await Run("Checking mods…", async ct =>
     {
         if (draft == null) return;
@@ -363,14 +380,36 @@ public partial class MainWindow
     }
     private async Task PublishDraft() => await Run("Publishing changes…", async ct =>
     {
-        using var api = new HearthApi(selectedHost!.Url, selectedHost.OwnerToken); var pack = selectedPack!;
+        var host = selectedHost!;
+        using var api = new HearthApi(host.Url, host.OwnerToken); var pack = selectedPack!;
+        if (await RefreshStaleDraft(api, pack, ct)) return;
         foreach (var item in draft!.Files.Where(f => f.LocalPath != null).DistinctBy(f => f.File.Sha256))
         { Status("Uploading " + FileName(item.File) + "…"); await api.UploadAsync(pack.Id, item.LocalPath!, item.File, null, ct); }
-        published = await api.PublishAsync(pack.Id, new(pack.Name, pack.MinecraftVersion, pack.Loader, pack.LoaderVersion, draft.Files.Select(f => f.File).ToList(), draft.Notes, draft.BaseReleaseId), ct);
+        try
+        {
+            published = await api.PublishAsync(pack.Id, new(pack.Name, pack.MinecraftVersion, pack.Loader, pack.LoaderVersion, draft.Files.Select(f => f.File).ToList(), draft.Notes, draft.BaseReleaseId), ct);
+        }
+        catch (HostApiException exception) when (exception.StatusCode == HttpStatusCode.Conflict)
+        {
+            // Another owner may publish between the preflight and final commit.
+            if (await RefreshStaleDraft(api, pack, ct)) return;
+            throw;
+        }
         selectedPack = pack with { ReleaseId = published.ReleaseId };
         draft = new() { BaseReleaseId = published.ReleaseId, Files = published.Files.Select(f => new DraftItem(f, null)).ToList() };
-        ownerPackCache.Remove(selectedHost.Id); SaveDraft(); RenderEditor(); Status("Published. Use Members to invite and approve players.");
+        ownerPackCache.Remove(host.Id); SaveDraft(); RenderEditor(); Status("Published. Use Members to invite and approve players.");
     });
+    private async Task<bool> RefreshStaleDraft(HearthApi api, PackSummary pack, CancellationToken ct)
+    {
+        var latestPack = (await api.ListPacksAsync(ct)).FirstOrDefault(p => p.Id == pack.Id)
+            ?? throw new InvalidOperationException("This pack is no longer available to this owner.");
+        if (latestPack.ReleaseId == draft!.BaseReleaseId) return false;
+        var latest = latestPack.ReleaseId == null ? null : await api.ManifestAsync(pack.Id, ct);
+        selectedPack = latestPack; published = latest;
+        ownerPackCache.Remove(selectedHost!.Id);
+        RenderEditor(); Status("A newer release is available. Your draft was kept; discard it to start from the current release.");
+        return true;
+    }
     private async Task ShowMembers() => await Run("Loading members…", async ct =>
     {
         var host = selectedHost!; var pack = selectedPack!;

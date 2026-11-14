@@ -156,7 +156,7 @@ public sealed class AppLocalHost : IDisposable
         try { probe.Start(); }
         catch (SocketException exception)
         {
-            throw new IOException($"Port {port} is already in use. Stop the other host or choose a different hosting port. Hearth did not connect to or stop that process.", exception);
+            throw new IOException($"Port {port} is already in use. Close the other Hearth profile or program using it, then retry. Hearth did not connect to or stop that process.", exception);
         }
         finally { probe.Stop(); }
     }

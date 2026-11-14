@@ -3,6 +3,7 @@ using System.IO;
 using System.Reflection;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Markup;
 using System.Windows.Threading;
 using System.Xml.Linq;
@@ -41,7 +42,7 @@ internal static class Program
                 Console.Write(output.GetAwaiter().GetResult());
                 if (child.ExitCode != 0) throw new InvalidOperationException(name + ": " + errors.GetAwaiter().GetResult());
             }
-            foreach (var name in new[] { "host-window-close", "host-tray-quit", "host-startup-tray", "host-disabled", "host-persistence-first", "host-persistence-reopen", "host-persistence-disabled" })
+            foreach (var name in new[] { "host-window-close", "host-close-busy", "host-invalid-settings", "host-retry", "host-tray-quit", "host-startup-tray", "host-disabled", "host-persistence-first", "host-persistence-reopen", "host-persistence-disabled" })
             {
                 var root = Path.Combine(taskRoot, name.StartsWith("host-persistence-", StringComparison.Ordinal) ? "host-persistence" : name);
                 if (name is not "host-persistence-reopen" and not "host-persistence-disabled") PrepareHostingProfile(root, name);
@@ -54,10 +55,11 @@ internal static class Program
                 Console.Write(output.GetAwaiter().GetResult());
                 if (child.ExitCode != 0) throw new InvalidOperationException(name + ": " + errors.GetAwaiter().GetResult());
                 var persisted = new ProfileStore(root);
-                Check(!OwnedHostChecks.PortOpenAsync(persisted.State.LocalHostingPort).GetAwaiter().GetResult(), name + ": the launcher exit closes the host listener");
+                if (persisted.State.LocalHostingPort >= 1024)
+                    Check(!OwnedHostChecks.PortOpenAsync(persisted.State.LocalHostingPort).GetAwaiter().GetResult(), name + ": the launcher exit closes the host listener");
             }
             CheckCrashCleanupAsync(Path.Combine(taskRoot, "host-crash")).GetAwaiter().GetResult();
-            Console.WriteLine("PASS: 14 isolated launcher lifecycle scenarios and app-owned host runtime checks.");
+            Console.WriteLine("PASS: 17 isolated launcher lifecycle scenarios and app-owned host runtime checks.");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -88,7 +90,7 @@ internal static class Program
             try
             {
                 Check(app.IsExiting && !app.TrayAvailable, scenario + ": exit disposes the tray icon");
-                if (scenario == "quit-busy") Check(operationStopped, "Quit waits for an in-progress operation to stop safely");
+                if (scenario is "quit-busy" or "host-close-busy") Check(operationStopped, "Exiting waits for an in-progress operation to stop safely");
             }
             catch (Exception error) { failure = error; }
         };
@@ -100,7 +102,7 @@ internal static class Program
                 if (scenario.StartsWith("host-", StringComparison.Ordinal))
                 {
                     exerciseCompleted = true; // Close can end the dispatcher before an await continuation runs.
-                    await ExerciseHostingAsync(scenario, profileRoot, app, window, (process, url) => { ownedProcess = process; ownedUrl = url; });
+                    await ExerciseHostingAsync(scenario, profileRoot, app, window, (process, url) => { ownedProcess = process; ownedUrl = url; }, () => operationStopped = true);
                     return;
                 }
                 switch (scenario)
@@ -174,7 +176,7 @@ internal static class Program
         var profile = new ProfileStore(root);
         profile.State.CloseToTray = scenario is "host-tray-quit" or "host-startup-tray" or "host-crash";
         profile.State.LocalHostingEnabled = scenario != "host-disabled";
-        profile.State.LocalHostingPort = OwnedHostChecks.FreePort();
+        profile.State.LocalHostingPort = scenario == "host-invalid-settings" ? 0 : OwnedHostChecks.FreePort();
         profile.State.LocalHostDataDirectory = Path.Combine(root, "Host");
         profile.State.LegacyHostingMigrated = true;
         profile.State.LocalHostOwnerToken = OwnedHostChecks.NewOwnerToken();
@@ -188,9 +190,28 @@ internal static class Program
         profile.Save();
     }
 
-    private static async Task ExerciseHostingAsync(string scenario, string profileRoot, FixtureApp app, MainWindow window, Action<int?, string> captureHost)
+    private static async Task ExerciseHostingAsync(string scenario, string profileRoot, FixtureApp app, MainWindow window, Action<int?, string> captureHost, Action operationStopped)
     {
         var profile = new ProfileStore(profileRoot);
+        if (scenario == "host-invalid-settings")
+        {
+            Check(window.IsVisible && app.LocalHost == null && !string.IsNullOrWhiteSpace(app.HostingError)
+                && !Directory.Exists(Path.Combine(profileRoot, "Host")),
+                "Invalid local host settings keep the launcher open with an explanation and no host child");
+            ((Button)window.FindName("LibraryNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Check(((FrameworkElement)window.FindName("LibraryView")).Visibility == Visibility.Visible
+                && ((FrameworkElement)window.FindName("MainContent")).IsEnabled,
+                "A local hosting setup failure leaves the player's library usable");
+            ((Button)window.FindName("AddPackNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Check(((TextBlock)window.FindName("PageTitle")).Text == "Add modpack",
+                "Players can still navigate to joining a pack after local hosting setup fails");
+            await app.DisableHostingAsync();
+            var disabled = new ProfileStore(profileRoot);
+            Check(!disabled.State.LocalHostingEnabled && disabled.State.LocalHostOwnerToken == profile.State.LocalHostOwnerToken,
+                "Disabling failed hosting saves the preference and keeps its owner key even without a host controller");
+            window.Close();
+            return;
+        }
         if (scenario is "host-disabled" or "host-persistence-disabled")
         {
             await Task.Delay(300);
@@ -222,6 +243,40 @@ internal static class Program
             case "host-window-close":
                 Check(window.IsVisible && !app.TrayAvailable, "Host is running with close-to-tray disabled");
                 window.Close();
+                break;
+            case "host-close-busy":
+                var operation = new Func<CancellationToken, Task>(async cancellation =>
+                {
+                    try { await Task.Delay(Timeout.Infinite, cancellation); }
+                    finally { await Task.Delay(50); operationStopped(); }
+                });
+                _ = (Task)typeof(MainWindow).GetMethod("Run", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, ["Lifecycle test operation", operation])!;
+                window.Close();
+                Check(!app.IsExiting, "Closing a busy window allows cancellation cleanup before exiting");
+                break;
+            case "host-retry":
+                ((Button)window.FindName("HostsNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(Descendants(window).OfType<Button>().Any(button => Equals(button.Content, "Hosting enabled") && !button.IsEnabled),
+                    "The hosting page initially reports the running host");
+                var stoppedPid = app.LocalHost.ProcessId;
+                using (var stoppedHost = Process.GetProcessById(stoppedPid!.Value))
+                {
+                    stoppedHost.Kill(entireProcessTree: false);
+                    await stoppedHost.WaitForExitAsync();
+                }
+                await OwnedHostChecks.WaitUntilAsync(() => Task.FromResult(
+                    Descendants(window).OfType<Button>().Any(button => Equals(button.Content, "Retry hosting") && button.IsEnabled)
+                    && Descendants(window).OfType<TextBlock>().Any(text => text.Text.StartsWith("Hosting is stopped", StringComparison.Ordinal))),
+                    "The current hosting page did not notice an unexpected host exit.");
+                Check(true, "Unexpected host exit updates the visible status and enables Retry without leaving the page");
+                var retry = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "Retry hosting"));
+                retry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                await OwnedHostChecks.WaitUntilAsync(() => Task.FromResult(app.LocalHost.IsRunning
+                    && ((FrameworkElement)window.FindName("MainContent")).IsEnabled), "Retry did not restore the host.");
+                captureHost(app.LocalHost.ProcessId, app.LocalHost.HostUrl);
+                Check(app.LocalHost.ProcessId != stoppedPid && (await api.HealthAsync()).HostId == identity.HostId
+                    && (await api.ListPacksAsync()).Count == 0, "Retry starts a new child while preserving host identity and owner access");
+                window.RequestQuit();
                 break;
             case "host-tray-quit":
             case "host-startup-tray":
@@ -299,6 +354,15 @@ internal static class Program
                 orphan.Kill(entireProcessTree: true);
                 await orphan.WaitForExitAsync();
             }
+        }
+    }
+
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject node)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(node).OfType<DependencyObject>())
+        {
+            yield return child;
+            foreach (var descendant in Descendants(child)) yield return descendant;
         }
     }
 

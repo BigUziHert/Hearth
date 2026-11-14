@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 
 namespace Hearth.Core;
@@ -124,8 +125,6 @@ public sealed class PrismService(string profileRoot)
         if (string.IsNullOrWhiteSpace(output)) return;
         using var data = JsonDocument.Parse(output);
         var rows = data.RootElement.ValueKind == JsonValueKind.Array ? data.RootElement.EnumerateArray().ToArray() : [data.RootElement];
-        var instance = Path.GetFullPath(instanceDirectory);
-        var prismRoot = Directory.GetParent(Directory.GetParent(instance)!.FullName)!.FullName;
         foreach (var row in rows)
         {
             var name = row.GetProperty("Name").GetString() ?? "";
@@ -133,8 +132,36 @@ public sealed class PrismService(string profileRoot)
             // A service or another Windows user's Java process may not expose its command line.
             // Those processes cannot normally access this user's private Hearth profile. Do not
             // block an unrelated always-on Minecraft server merely because it is protected.
-            if (command is null) continue;
-            if (command.Contains(instance, StringComparison.OrdinalIgnoreCase) || (name.Equals("prismlauncher.exe", StringComparison.OrdinalIgnoreCase) && command.Contains(prismRoot, StringComparison.OrdinalIgnoreCase))) throw new IOException("Close Minecraft and the Hearth Prism window before updating or switching terrain mods. Then press Play again.");
+            if (IsInstanceProcess(name, command, instanceDirectory)) throw new IOException("Close Minecraft and the Hearth Prism window before updating or switching terrain mods. Then press Play again.");
         }
+    }
+    public static bool IsInstanceProcess(string processName, string? commandLine, string instanceDirectory)
+    {
+        if (commandLine is null) return false;
+        var instance = Path.GetFullPath(instanceDirectory);
+        var prismRoot = Directory.GetParent(Directory.GetParent(instance)!.FullName)!.FullName;
+        // Qt and Java can spell Windows paths with either separator. Boundaries
+        // also prevent C:\Hearth from matching the unrelated C:\HearthTest profile.
+        var arguments = Regex.Matches(commandLine.Replace('/', '\\'), "(?:[^\\s\"]+|\"[^\"]*\")+")
+            .Select(match => match.Value.Replace("\"", "")).ToArray();
+        bool References(string directory)
+        {
+            var path = directory.Replace('/', '\\').TrimEnd('\\');
+            foreach (var argument in arguments)
+            {
+                for (var offset = 0; offset < argument.Length;)
+                {
+                    var index = argument.IndexOf(path, offset, StringComparison.OrdinalIgnoreCase);
+                    if (index < 0) break;
+                    var end = index + path.Length;
+                    var starts = index == 0 || argument[index - 1] is '=' or ';';
+                    var ends = end == argument.Length || argument[end] is '\\' or ';';
+                    if (starts && ends) return true;
+                    offset = end;
+                }
+            }
+            return false;
+        }
+        return References(instance) || (processName.Equals("prismlauncher.exe", StringComparison.OrdinalIgnoreCase) && References(prismRoot));
     }
 }

@@ -15,6 +15,7 @@ public static class LegacyHostingMigration
 
     public static void Adopt(ProfileStore profile)
     {
+        if (profile.State.LegacyHostingMigrated) return;
         if (ServiceInstalled()) return;
         var normalRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Hearth");
         if (!Path.GetFullPath(profile.Root).TrimEnd(Path.DirectorySeparatorChar).Equals(normalRoot, StringComparison.OrdinalIgnoreCase)) return;
@@ -28,7 +29,15 @@ public static class LegacyHostingMigration
     public static void AdoptDescriptor(ProfileStore profile, string descriptor, string ownerSid)
     {
         if (profile.State.LegacyHostingMigrated) return;
-        using var document = JsonDocument.Parse(File.ReadAllText(descriptor));
+        string contents;
+        try { contents = File.ReadAllText(descriptor); }
+        catch (UnauthorizedAccessException)
+        {
+            // The descriptor is intentionally readable only by the original
+            // host owner. A different Windows user can still use the launcher.
+            return;
+        }
+        using var document = JsonDocument.Parse(contents);
         var data = document.RootElement;
         if (data.GetProperty("formatVersion").GetInt32() != 1 || data.GetProperty("ownerSid").GetString() != ownerSid) return;
         var directory = data.GetProperty("dataDirectory").GetString() ?? "";

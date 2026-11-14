@@ -2,14 +2,14 @@
 
 ## Join and play
 
-1. Install `Hearth-Setup-1.0.8-win-x64.exe` and open Hearth.
+1. Install `Hearth-Setup-1.0.9-win-x64.exe` and open Hearth.
 2. Select **Add modpack**, paste your friend's `hearth://join?...` invite, enter the name they know you by, and select **Request access**. You can also open an invite directly after installing Hearth.
 3. Select the pack in the sidebar. Open **⋯ → Member details & fingerprint** and tell the owner your name and fingerprint so they approve the correct request. Select **Check approval** after they approve you.
 4. The main button becomes **Set up Prism** if Minecraft setup is needed. Hearth downloads and verifies the official portable Windows launcher. Finish Prism's first-run wizard, then use **Settings → Accounts → Add Microsoft** inside Prism. Sign in with your own account that owns Minecraft Java and let Prism configure Java. You can reopen Prism from Hearth's **Settings → Open Prism**.
 5. Close the Hearth Prism window. Choose **Off**, **Voxy**, or **Distant Horizons** if the owner offers that option, then press **Play**. Hearth installs or updates the pack, verifies its files, and opens its persistent Prism instance. The first launch also downloads Minecraft and its loader.
 6. In Minecraft, use **Multiplayer → Add Server** for your existing world server's address. Hearth's file-host address and the Minecraft server address have different jobs.
 
-Close this pack's Minecraft and Hearth Prism window before updating or changing terrain. If a transfer fails, retry Play. When a host is unavailable and a complete copy is installed, the main button becomes **Play installed**; this uses the last complete copy without applying updates or a terrain change. **⋯ → Play installed release** also opens that copy. Prism account requirements still apply.
+Close this pack's Minecraft and Hearth Prism window before updating or changing terrain. If a transfer fails, retry Play. Play installed verifies the saved release before launching; if its managed files are damaged, reconnect to the host and use Play to repair them. When a host is unavailable and a complete copy is installed, the main button becomes **Play installed**; this uses the last complete copy without applying updates or a terrain change. **⋯ → Play installed release** also opens that copy. Prism account requirements still apply.
 
 Your local worlds, controls, graphics, screenshots, and other personal files remain in the same instance. A conflicting personal JAR is left alone; move or rename it and retry. **⋯ → Remove from library** removes the saved pack entry while keeping its downloaded instance. A current invite lets you request access again.
 
@@ -68,7 +68,7 @@ The public endpoint must preserve Authorization headers, allow PUT/POST and up t
 5. Open **Members → Copy invite** and share it. If the connection is localhost, Hearth instead offers **Copy local test invite** and **Open Hosting**; connect your public HTTPS address before inviting outside friends. Use **Refresh requests**, compare fingerprints, and **Approve** each friend. Every pack has separate approvals; a forwarded link grants no downloads.
 6. **Remove** blocks a person's future authorized downloads. **Make owner** allows that person to publish and manage this pack. Owners can open **⋯ → Manage as owner** from their joined pack.
 
-To manage from your main PC, install Hearth there and use **Hosting → Connect an existing host**, entering the server's public HTTPS address and owner key. You can host multiple packs, connect other hosts, and use **Add to my packs** to play your own packs. Publish from one PC at a time; stale drafts must be refreshed.
+To manage from your main PC, install Hearth there and use **Hosting → Connect an existing host**, entering the server's public HTTPS address and owner key. You can host multiple packs, connect other hosts, and use **Open in my library** to play your own packs. Publish from one PC at a time. If someone publishes a newer release while you are editing, Hearth keeps your draft and asks you to discard it before starting from the current release. Use the same host address consistently when playing a pack; localhost and public-address connections have separate local instances.
 
 ## Update Hearth itself
 
@@ -80,4 +80,4 @@ Hearth uses its official release source, including for profiles that previously 
 
 ## Stop or move hosting
 
-**Hosting → Host on this PC → Stop hosting** stops serving packs and turns off automatic hosting when Hearth opens. Enabling again reuses the existing host data and your saved owner credential. Quitting Hearth stops hosting without forgetting that it should resume next time. Uninstalling stops hosting and preserves data. Back up `%LOCALAPPDATA%\Hearth\Host` while hosting is stopped and retain your owner key before moving to another PC. A host migrated from the Windows service keeps its existing folder, normally `%PROGRAMDATA%\Hearth\Host`; back up that folder instead.
+**Hosting → Host on this PC → Disable hosting** stops serving packs and turns off automatic hosting when Hearth opens. Enabling again reuses the existing host data and your saved owner credential. Quitting Hearth stops hosting without forgetting that it should resume next time. Uninstalling stops hosting and preserves data. Back up `%LOCALAPPDATA%\Hearth\Host` while hosting is stopped and retain your owner key before moving to another PC. A host migrated from the Windows service keeps its existing folder, normally `%PROGRAMDATA%\Hearth\Host`; back up that folder instead.

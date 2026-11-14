@@ -117,6 +117,8 @@ sealed class IntegrationSuite
         var persisted=string.Join('\n',Directory.EnumerateFiles(Path.Combine(data,"host"),"*.json",SearchOption.AllDirectories).Select(File.ReadAllText)); Check(!persisted.Contains(token)&&!persisted.Contains(alice.Token)&&!persisted.Contains(bob.Token),"No plaintext bearer credentials in host JSON");
         using(var metadata=JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(first.InstanceDirectory,"mmc-pack.json")))) Check(metadata.RootElement.GetProperty("components").EnumerateArray().Any(x=>x.GetProperty("uid").GetString()=="net.fabricmc.fabric-loader"),"Prism metadata includes selected loader");
         await Integrations(first);
+        FlowInputChecks.Run(Check);
+        await InstalledPlayChecks.RunAsync(Path.Combine(data, "offline-play-checks"), Check);
         complete=true; Console.WriteLine($"PASS: {checks.Count} checks. Evidence: {Path.Combine(data,"report.json")}");
     }
 

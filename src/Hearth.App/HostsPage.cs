@@ -6,16 +6,19 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Hearth.Core;
 
 namespace Hearth.App;
 public partial class MainWindow
 {
+    private DispatcherTimer? hostingStatusTimer;
     private bool IsOwnedHost(HostConnection host) => host.Id == store.State.LocalHostConnectionId;
     private void ShowHosts() => ShowHosts(expandLocal: false);
     private void ShowHosts(bool expandLocal)
     {
         PageStart("hosts", "Hosting", "");
+        var ownedHostCards = new List<(HostConnection Host, TextBlock Health, Button Manage)>();
         if (store.State.Hosts.Count == 0)
         {
             var intro = Card("Choose where your packs live", "Connect to your Windows server, or host from this PC.");
@@ -36,6 +39,7 @@ public partial class MainWindow
                     selectedHost = host; ShowPublishing();
                 });
                 manage.IsEnabled = !IsOwnedHost(host) || (Application.Current as App)?.LocalHost?.IsRunning == true;
+                if (IsOwnedHost(host)) ownedHostCards.Add((host, health, manage));
                 card.Children.Add(Row(manage, Button("Check connection", () => _ = CheckHostConnection(host, health), true)));
                 var details = new StackPanel { Margin = new(0, 10, 0, 0) };
                 details.Children.Add(Text("Use the owner key to connect from another PC. It gives management access.", 12, false, "#ADBAB1"));
@@ -60,8 +64,10 @@ public partial class MainWindow
         remoteContent.Children.Add(Text("Copy the owner key from Hosting on the other PC.", 12, false, "#ADBAB1"));
         remoteContent.Children.Add(Row(Button("Connect", () => _ = Run("Connecting to host…", async ct =>
         {
-            using var api = new HearthApi(url.Text, key.Password); var health = await api.HealthAsync(ct); await api.ListPacksAsync(ct);
-            var host = new HostConnection(Guid.NewGuid().ToString("N"), string.IsNullOrWhiteSpace(name.Text) ? health.Name : name.Text.Trim(), api.HostUrl, key.Password);
+            var ownerKey = key.Password.Trim();
+            if (string.IsNullOrEmpty(ownerKey)) throw new InvalidOperationException("Paste the owner key from Hosting on the host PC.");
+            using var api = new HearthApi(url.Text, ownerKey); var health = await api.HealthAsync(ct); await api.ListPacksAsync(ct);
+            var host = new HostConnection(Guid.NewGuid().ToString("N"), string.IsNullOrWhiteSpace(name.Text) ? health.Name : name.Text.Trim(), api.HostUrl, ownerKey);
             var existing = store.State.Hosts.FindIndex(h => h.Url == host.Url && h.OwnerToken == host.OwnerToken);
             if (existing >= 0) host = host with { Id = store.State.Hosts[existing].Id };
             if (existing >= 0) store.State.Hosts[existing] = host; else store.State.Hosts.Add(host);
@@ -73,9 +79,8 @@ public partial class MainWindow
         localContent.Children.Add(Text("The host shares modpack files. Your Minecraft world server stays separate.", 13, false, "#ADBAB1"));
         var app = Application.Current as App;
         var running = app?.LocalHost?.IsRunning == true;
-        localContent.Children.Add(Text(running ? "Hosting is running" : store.State.LocalHostingEnabled ? "Hosting is stopped — retry to start it" : "Hosting is off", 13, true));
-        var hostingError = !string.IsNullOrEmpty(app?.HostingError) ? app.HostingError : app?.LocalHost?.LastError;
-        if (!string.IsNullOrEmpty(hostingError)) localContent.Children.Add(Text(hostingError, 12, false, "#D8B36B"));
+        var localStatus = Text("", 13, true); localContent.Children.Add(localStatus);
+        var localError = Text("", 12, false, "#D8B36B"); localContent.Children.Add(localError);
         localContent.Children.Add(Text("Runs while Hearth is open or in the system tray. Quitting Hearth stops hosting. Reopening Hearth resumes it.", 12, false, "#ADBAB1"));
         localContent.Children.Add(Text("Choose close to tray and start with Windows in Settings.", 12, false, "#ADBAB1"));
         PasswordBox? recoveryKey = null;
@@ -98,6 +103,28 @@ public partial class MainWindow
         stop.IsEnabled = running || store.State.LocalHostingEnabled;
         localContent.Children.Add(Row(enable, stop));
         add.Children.Add(new Expander { Header = "Host on this PC", Content = localContent, IsExpanded = expandLocal || running || store.State.LocalHostingEnabled, Margin = new(0, 2, 0, 5) });
+        var previousRunning = running;
+        void RefreshLocalStatus()
+        {
+            var currentRunning = app?.LocalHost?.IsRunning == true;
+            localStatus.Text = currentRunning ? "Hosting is running" : store.State.LocalHostingEnabled ? "Hosting is stopped — retry to start it" : "Hosting is off";
+            var error = !string.IsNullOrEmpty(app?.HostingError) ? app.HostingError : app?.LocalHost?.LastError;
+            localError.Text = error ?? "";
+            localError.Visibility = string.IsNullOrEmpty(error) ? Visibility.Collapsed : Visibility.Visible;
+            enable.Content = currentRunning ? "Hosting enabled" : store.State.LocalHostingEnabled ? "Retry hosting" : "Enable hosting";
+            enable.IsEnabled = !currentRunning;
+            stop.IsEnabled = currentRunning || store.State.LocalHostingEnabled;
+            foreach (var card in ownedHostCards)
+            {
+                card.Manage.IsEnabled = currentRunning;
+                if (previousRunning != currentRunning) _ = CheckHostConnection(card.Host, card.Health);
+            }
+            previousRunning = currentRunning;
+        }
+        RefreshLocalStatus();
+        hostingStatusTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
+        hostingStatusTimer.Tick += (_, _) => RefreshLocalStatus();
+        hostingStatusTimer.Start();
     }
 
     private async Task CheckHostConnection(HostConnection host, TextBlock label)
@@ -125,7 +152,8 @@ public partial class MainWindow
                 else text += "\nNo approved player requests since the host started.";
             }
             else if (response.StatusCode is HttpStatusCode.Unauthorized) text += "\nReconnect with a valid owner key.";
-            label.Text = text;
+            label.Text = IsOwnedHost(host) && (Application.Current as App)?.LocalHost?.IsRunning != true
+                ? "Hosting is stopped. Retry under Host on this PC." : text;
         }
         catch (Exception ex) { label.Text = "Could not reach this host. Check its connection and try again."; label.ToolTip = ex.Message; }
     }
@@ -171,6 +199,12 @@ public partial class MainWindow
                 Status("Hosting did not start. " + exception.Message);
             }
         });
+    }
+    public void ShowHostingStartupIssue(string message)
+    {
+        ShowHosts(expandLocal: true);
+        Show();
+        Status(message);
     }
     private void OpenGuide()
     {

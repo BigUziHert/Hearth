@@ -47,9 +47,12 @@ public partial class MainWindow : Window
         {
             var app = Application.Current as App;
             if (busy && app?.IsExiting != true && !(store.State.CloseToTray && app?.TrayAvailable == true))
-            { e.Cancel = true; Status("An operation is in progress. Cancel it before closing Hearth."); }
+            {
+                e.Cancel = true;
+                Dispatcher.BeginInvoke(new Action(RequestQuit));
+            }
         };
-        Closed += (_, _) => { packStatusCancellation?.Cancel(); packStatusCancellation?.Dispose(); };
+        Closed += (_, _) => { packStatusCancellation?.Cancel(); packStatusCancellation?.Dispose(); ownerListRequest?.Cancel(); ownerListRequest?.Dispose(); hostingStatusTimer?.Stop(); };
     }
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
@@ -82,6 +85,7 @@ public partial class MainWindow : Window
     }
     private void PageStart(string key, string title, string eyebrow)
     {
+        hostingStatusTimer?.Stop(); hostingStatusTimer = null;
         packStatusCancellation?.Cancel(); activePage = key; PageTitle.Text = title; PageEyebrow.Text = eyebrow; Page.Children.Clear(); PageActions.Children.Clear();
         LibraryView.Visibility = key == "library" ? Visibility.Visible : Visibility.Collapsed;
         PageHeader.Visibility = PageScroller.Visibility = key == "library" ? Visibility.Collapsed : Visibility.Visible;
@@ -99,8 +103,15 @@ public partial class MainWindow : Window
         if (busy || exitRequested) return; busy = true; operation = new(); operationFinished = new(TaskCreationOptions.RunContinuationsAsynchronously); MainContent.IsEnabled = SidebarPanel.IsEnabled = false;
         Progress.Visibility = CancelButton.Visibility = Visibility.Visible; Status(label);
         try { await work(operation.Token); }
-        catch (OperationCanceledException) { Status("Cancelled. No incomplete release was applied."); }
-        catch (Exception ex) { Status(ex.Message); MessageBox.Show(this, ex.Message, "Hearth", MessageBoxButton.OK, MessageBoxImage.Information); }
+        catch (OperationCanceledException) { if (!exitRequested) Status("Canceled. You can try again."); }
+        catch (Exception ex)
+        {
+            if (!exitRequested)
+            {
+                Status(ex.Message);
+                MessageBox.Show(this, ex.Message, "Hearth", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
         finally
         {
             busy = false; operation.Dispose(); operation = null; MainContent.IsEnabled = SidebarPanel.IsEnabled = true;
@@ -113,7 +124,9 @@ public partial class MainWindow : Window
     {
         if (exitRequested) return;
         exitRequested = true;
+        Status("Closing Hearth…");
         var completion = operationFinished?.Task;
+        packStatusCancellation?.Cancel();
         operation?.Cancel();
         if (completion != null) await completion;
         if (Application.Current is App app) app.ExitApplication(); else Close();
@@ -139,16 +152,18 @@ public partial class MainWindow : Window
         }
         catch (HostApiException ex) when (ex.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.NotFound)
         {
+            ct.ThrowIfCancellationRequested();
             await RefreshSelectedStatus(); Status("Pack access or its release has changed. Follow the next step shown above.");
         }
-        catch { _ = RefreshSelectedStatus(); throw; }
+        catch { if (!ct.IsCancellationRequested && !exitRequested) _ = RefreshSelectedStatus(); throw; }
     });
     private async Task InstallPrism() => await Run("Downloading Prism from its official release…", async ct =>
     {
-        store.State.PrismExecutable = await prism.InstallAsync(new Progress<SyncProgress>(p => Status(p.Message)), ct); store.Save(); prism.Open(store.State.PrismExecutable);
+        store.State.PrismExecutable = await prism.InstallAsync(new Progress<SyncProgress>(p => Status(p.Message)), ct); store.Save();
+        ct.ThrowIfCancellationRequested(); prism.Open(store.State.PrismExecutable);
         if (activePage == "library") ShowLibrary();
         else if (activePage == "settings") ShowSettings();
-        Status("Prism is ready. Finish its setup, then Settings → Accounts → Add Microsoft. Use your own Minecraft account.");
+        Status("In Prism, finish setup and sign in through Settings → Accounts → Add Microsoft. Then close Prism, return here, and press Play.");
     });
     private void OpenFolder(string path) { Directory.CreateDirectory(path); Process.Start(new ProcessStartInfo("explorer.exe") { UseShellExecute = true, ArgumentList = { path } }); }
 }

@@ -9,12 +9,12 @@ The same installer contains the launcher and optional hosting. Hosting runs whil
 ## Start here
 
 - [Download the latest Windows installer](https://github.com/BigUziHert/Hearth/releases/latest)
-- Local installer: `artifacts/Hearth-Setup-1.0.8-win-x64.exe`
-- Local source archive: `artifacts/Hearth-Source-1.0.8.zip`
+- Local installer: `artifacts/Hearth-Setup-1.0.9-win-x64.exe`
+- Local source archive: `artifacts/Hearth-Source-1.0.9.zip`
 - [First-time hosting, publishing, and joining](docs/FIRST-RUN.md)
 - [Verification and remaining manual checks](docs/VERIFICATION.md)
 - [HTTP protocol and host data](docs/HOST-PROTOCOL.md)
-- [Changes in 1.0.8](docs/RELEASE-NOTES-1.0.8.md)
+- [Changes in 1.0.9](docs/RELEASE-NOTES-1.0.9.md)
 
 ## Startup and the system tray
 

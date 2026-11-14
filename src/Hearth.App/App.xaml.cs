@@ -12,6 +12,7 @@ public partial class App : Application
     private CancellationTokenSource pipeCancel = new();
     private ProfileStore? profile;
     private TrayController? tray;
+    private string? hostingSetupError;
     public bool IsExiting { get; private set; }
     public bool TrayAvailable => tray != null;
     public AppLocalHost? LocalHost { get; private set; }
@@ -38,8 +39,18 @@ public partial class App : Application
                 client.Connect(2000); using var writer = new StreamWriter(client); writer.WriteLine(invite ?? "activate"); writer.Flush(); Shutdown(); return;
             }
             profile = new ProfileStore(root);
-            LegacyHostingMigration.Adopt(profile);
-            LocalHost = CreateLocalHost(profile);
+            try
+            {
+                LegacyHostingMigration.Adopt(profile);
+                LocalHost = CreateLocalHost(profile);
+            }
+            catch (Exception ex)
+            {
+                // An unreadable old-host descriptor or invalid host setting must
+                // not prevent someone from opening the player side of Hearth.
+                hostingSetupError = "Hearth couldn't restore local hosting. You can still play joined packs. Check your host-data folder or restore its backup, then reopen Hearth. " + ex.Message;
+                HostingError = hostingSetupError;
+            }
             var window = new MainWindow(profile); MainWindow = window;
             window.Closing += (_, args) =>
             {
@@ -60,7 +71,8 @@ public partial class App : Application
             if (!startup || invite != null || !TrayAvailable) window.Show();
             if (invite != null) window.OpenInvite(invite);
             _ = ListenAsync(pipe, window);
-            if (profile.State.LocalHostingEnabled) window.StartConfiguredHosting();
+            if (hostingSetupError != null) window.ShowHostingStartupIssue(hostingSetupError);
+            else if (profile.State.LocalHostingEnabled) window.StartConfiguredHosting();
         }
         catch (Exception ex) { MessageBox.Show(ex.Message, "Hearth could not start", MessageBoxButton.OK, MessageBoxImage.Error); Shutdown(1); }
     }
@@ -70,8 +82,9 @@ public partial class App : Application
 
     public async Task<HostConnection> EnableHostingAsync(CancellationToken cancellationToken = default)
     {
+        if (hostingSetupError != null) throw new InvalidOperationException(hostingSetupError);
         if (profile == null || LocalHost == null || IsExiting) throw new InvalidOperationException("Hearth is closing.");
-        HostingError = "";
+        HostingError = hostingSetupError ?? "";
         try
         {
             if (LegacyHostingMigration.ServiceInstalled())
@@ -89,13 +102,13 @@ public partial class App : Application
 
     public async Task DisableHostingAsync()
     {
-        if (profile == null || LocalHost == null) return;
+        if (profile == null) return;
         var previous = profile.State.LocalHostingEnabled;
         profile.State.LocalHostingEnabled = false;
         try { profile.Save(); }
         catch { profile.State.LocalHostingEnabled = previous; throw; }
-        await LocalHost.StopAsync();
-        HostingError = "";
+        if (LocalHost != null) await LocalHost.StopAsync();
+        HostingError = hostingSetupError ?? "";
     }
     private async Task ListenAsync(string name, MainWindow window)
     {

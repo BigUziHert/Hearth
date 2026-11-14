@@ -204,9 +204,10 @@ public partial class MainWindow
         void Item(string name, Action action, bool enabled = true) { var item = new MenuItem { Header = name, IsEnabled = enabled }; item.Click += (_, _) => { if (IsCurrentPack(pack)) action(); }; menu.Items.Add(item); }
         Item("Check access & updates", () => _ = RefreshSelectedStatus());
         Item("Member details & fingerprint", () => ShowPackDetails(pack));
+        if (Directory.Exists(sync.GetInstanceDirectory(pack.HostUrl, pack.PackId)))
+            Item("Open instance folder", () => OpenFolder(sync.GetInstanceDirectory(pack.HostUrl, pack.PackId)));
         if (LocalInstallation(pack) != null)
         {
-            Item("Open instance folder", () => OpenFolder(sync.GetInstanceDirectory(pack.HostUrl, pack.PackId)));
             Item("Play installed release", () => _ = PlayInstalled(pack), AvailablePrismExe() != null);
         }
         if (IsKnownOwner(pack)) { menu.Items.Add(new Separator()); Item("Manage as owner", () => _ = ManageJoinedPack(pack)); }
@@ -232,10 +233,10 @@ public partial class MainWindow
         panel.Children.Add(Text("Member ID: " + pack.MemberId, 11, false, "#96A49C"));
         panel.Children.Add(Row(Button("Copy fingerprint", () => { Clipboard.SetText(Fingerprint(pack)); Status("Member fingerprint copied."); }, true), Button("Done", () => window.Close()))); window.Content = panel; window.ShowDialog();
     }
-    private async Task PlayInstalled(JoinedPack pack) => await Run("Opening installed release…", async ct =>
+    private async Task PlayInstalled(JoinedPack pack) => await Run("Checking the installed release…", async ct =>
     {
-        await sync.RecoverAsync(pack.HostUrl, pack.PackId, ct);
-        _ = sync.GetInstalled(pack.HostUrl, pack.PackId) ?? throw new InvalidOperationException("No complete installation exists yet.");
+        await sync.VerifyInstalledAsync(pack.HostUrl, pack.PackId, ct);
+        ct.ThrowIfCancellationRequested();
         prism.Launch(PrismExe(), sync.GetInstanceId(pack.HostUrl, pack.PackId)); Status("Prism opened your previous complete release. No pack update was applied.");
     });
     private async Task ManageJoinedPack(JoinedPack pack) => await Run("Checking owner access…", async ct =>

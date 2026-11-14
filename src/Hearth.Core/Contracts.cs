@@ -26,12 +26,21 @@ public record Invite(string HostUrl, string PackId, string Code)
     public override string ToString() => $"hearth://join?host={Uri.EscapeDataString(HostUrl)}&pack={Uri.EscapeDataString(PackId)}&code={Uri.EscapeDataString(Code)}";
     public static Invite Parse(string value)
     {
-        var uri = new Uri(value.Trim());
-        if (uri.Scheme != "hearth" || uri.Host != "join") throw new ArgumentException("Paste a Hearth invite starting with hearth://join.");
-        var query = uri.Query.TrimStart('?').Split('&').Select(s => s.Split('=', 2)).Where(s => s.Length == 2).ToDictionary(s => s[0], s => Uri.UnescapeDataString(s[1]));
-        var host = new Uri(query["host"]);
+        if (!Uri.TryCreate(value?.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != "hearth" || uri.Host != "join"
+            || (uri.AbsolutePath.Length > 0 && uri.AbsolutePath != "/") || uri.Fragment.Length > 0)
+            throw new ArgumentException("Paste the complete Hearth invite starting with hearth://join.");
+        const string incomplete = "This invite is incomplete or invalid. Ask the owner to copy a fresh invite from the pack's Members page.";
+        var query = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var part in uri.Query.TrimStart('?').Split('&'))
+        {
+            var pair = part.Split('=', 2);
+            if (pair.Length != 2 || !query.TryAdd(pair[0], Uri.UnescapeDataString(pair[1]))) throw new ArgumentException(incomplete);
+        }
+        if (!query.TryGetValue("host", out var address) || !Uri.TryCreate(address, UriKind.Absolute, out var host)
+            || !query.TryGetValue("pack", out var pack) || string.IsNullOrWhiteSpace(pack)
+            || !query.TryGetValue("code", out var code) || string.IsNullOrWhiteSpace(code)) throw new ArgumentException(incomplete);
         if (host.Scheme != "https" && !(host.Scheme == "http" && host.IsLoopback)) throw new ArgumentException("Remote hosts must use HTTPS. HTTP is allowed only on this PC (localhost).");
         if (!string.IsNullOrEmpty(host.UserInfo) || host.Query.Length != 0 || host.Fragment.Length != 0) throw new ArgumentException("Invalid host address.");
-        return new(host.ToString().TrimEnd('/'), query["pack"], query["code"]);
+        return new(host.ToString().TrimEnd('/'), pack, code);
     }
 }
