@@ -1,0 +1,108 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Validate version
+        id: version
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = ([xml](Get-Content Directory.Build.props -Raw)).Project.PropertyGroup.Version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must be major.minor.patch.' }
+          if ($env:REF_TYPE -eq 'tag' -and $env:REF_NAME -ne ('v' + $version)) { throw 'Tag must match Directory.Build.props exactly.' }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "HEARTH_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Install pinned Inno Setup compiler
+        shell: pwsh
+        run: ./scripts/bootstrap-inno.ps1
+      - name: Build, test, and package
+        shell: pwsh
+        run: ./scripts/build.ps1 -Version $env:HEARTH_VERSION -IsccPath ./tools/inno/ISCC.exe
+      - name: Verify HTTP security boundaries
+        shell: pwsh
+        run: |
+          python tests/host_security_smoke.py
+          if ($LASTEXITCODE -ne 0) { throw 'Host security checks failed.' }
+      - name: Prepare release notes
+        shell: pwsh
+        run: |
+          $notes = "docs/RELEASE-NOTES-$env:HEARTH_VERSION.md"
+          if (Test-Path -LiteralPath $notes) { Copy-Item -LiteralPath $notes -Destination artifacts/RELEASE-NOTES.md }
+          else { "Hearth $env:HEARTH_VERSION Windows release. See the source README and first-run guide." | Set-Content artifacts/RELEASE-NOTES.md -Encoding utf8 }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Hearth-Windows-${{ steps.version.outputs.version }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          path: |
+            artifacts/Hearth-Setup-${{ steps.version.outputs.version }}-win-x64.exe
+            artifacts/Hearth-Source-${{ steps.version.outputs.version }}.zip
+            artifacts/SHA256SUMS.txt
+            artifacts/RELEASE-NOTES.md
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      HEARTH_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download verified release files
+        shell: pwsh
+        run: |
+          gh run download $env:GITHUB_RUN_ID --name "Hearth-Windows-$env:HEARTH_VERSION" --dir artifacts --repo $env:GH_REPO
+          if ($LASTEXITCODE -ne 0) { throw 'Could not retrieve the verified build artifact.' }
+      - name: Publish complete stable release
+        shell: pwsh
+        run: |
+          $tag = 'v' + $env:HEARTH_VERSION
+          $installer = "artifacts/Hearth-Setup-$env:HEARTH_VERSION-win-x64.exe"
+          $source = "artifacts/Hearth-Source-$env:HEARTH_VERSION.zip"
+          $existing = gh release view $tag --repo $env:GH_REPO --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if (-not ($existing | ConvertFrom-Json).isDraft) { throw 'This release is already public. Publish a new version instead of replacing it.' }
+            gh release upload $tag $installer $source artifacts/SHA256SUMS.txt --repo $env:GH_REPO --clobber
+          } else {
+            gh release create $tag $installer $source artifacts/SHA256SUMS.txt --repo $env:GH_REPO --verify-tag --draft --title "Hearth $env:HEARTH_VERSION" --notes-file artifacts/RELEASE-NOTES.md
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed; the draft has not been published.' }
+          $release = gh release view $tag --repo $env:GH_REPO --json assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not verify uploaded release assets.' }
+          $executables = @($release.assets | Where-Object name -like '*.exe')
+          if ($executables.Count -ne 1 -or $executables[0].name -ne [IO.Path]::GetFileName($installer)) { throw 'The draft must contain exactly the matching Windows installer.' }
+          gh release edit $tag --repo $env:GH_REPO --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the completed release.' }
