@@ -232,9 +232,11 @@ public sealed class WindowsHostNetworkPlatform : IHostNetworkPlatform
             rules = ((dynamic)policy!).Rules; rule = ((dynamic)rules).Item(ruleName); dynamic value = rule;
             return value.Enabled && value.Direction == 1 && value.Action == 1 && value.Protocol == 6
                 && string.Equals((string)value.ApplicationName, executable, StringComparison.OrdinalIgnoreCase)
-                && (string)value.LocalPorts == port.ToString() && (int)value.Profiles == int.MaxValue;
+                && (string)value.LocalPorts == port.ToString() && (((int)value.Profiles & 7) == 7);
         }
-        catch (Exception error) when (error is COMException or TypeLoadException or ArgumentException) { return false; }
+        // The COM "rule not found" HRESULT is surfaced as FileNotFoundException by .NET.
+        // Missing permission is normal on first run, not a failure to start hosting.
+        catch (Exception error) when (error is COMException or FileNotFoundException or TypeLoadException or ArgumentException) { return false; }
         finally
         {
             foreach (var item in new[] { rule, rules, policy }) if (item != null && Marshal.IsComObject(item)) Marshal.FinalReleaseComObject(item);

@@ -8,6 +8,12 @@ internal static class HostNetworkChecks
 {
     public static async Task RunAsync(Action<bool, string> check)
     {
+        // Exercise Windows' real COM HRESULT translation. A unique rule name is absent, and the
+        // noninteractive branch is read-only: it cannot launch elevation or write firewall rules.
+        var nativeProfile = Path.Combine(Path.GetTempPath(), "Hearth-absent-firewall-" + Guid.NewGuid().ToString("N"));
+        var native = new WindowsHostNetworkPlatform(nativeProfile, Path.Combine(nativeProfile, "Hearth.Host.exe"), 17843);
+        check(!await native.PrepareFirewallAsync(interactive: false, CancellationToken.None),
+            "Real Windows firewall lookup treats an absent rule as permission not yet granted without elevation or mutation");
         var profile = Path.Combine(Path.GetTempPath(), "Hearth-network-fixtures");
         HostNetworkSetup Setup(Fixture fixture) => new(profile, Path.Combine(profile, "Hearth.Host.exe"), 17843, fixture);
         var canceled = new Fixture { CancelPermission = true };
