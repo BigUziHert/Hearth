@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -42,6 +43,9 @@ internal static class Program
         {
             CheckProfiles(Path.Combine(taskRoot, "migration"));
             CheckStartup();
+            var hostingChecks = CheckHostingCancellation(Path.Combine(taskRoot, "hosting"));
+            Await(() => hostingChecks.IsCompleted, "Hosting cancellation regression scenarios complete");
+            hostingChecks.GetAwaiter().GetResult();
             CheckWindows(Path.Combine(taskRoot, "windows"));
             Console.WriteLine($"PASS: {checks} profile and WPF component checks.");
         }
@@ -93,6 +97,53 @@ internal static class Program
             Check(Equals(normalBefore, after?.GetValue("Hearth")), "Startup testing leaves the real player's registration unchanged");
         }
         finally { WindowsStartup.SetEnabled(root, false); }
+    }
+    private static async Task CheckHostingCancellation(string taskRoot)
+    {
+        var store = new ProfileStore(taskRoot);
+        var otherHost = new HostConnection("other", "Other host", "http://127.0.0.1:19123", "existing-other-key");
+        store.State.Hosts.Add(otherHost); store.Save();
+        var verifyCalls = 0;
+        Task Verify(HostConnection _, CancellationToken __) { verifyCalls++; return Task.CompletedTask; }
+        Task Cancel(string credentialPath)
+        {
+            var pending = new ProfileStore(taskRoot).State.Hosts.Single(host => host.Url == LocalHostingSetup.HostUrl);
+            Check(File.ReadAllText(credentialPath) == pending.OwnerToken, "Owner key is recoverable before the elevated installer can run");
+            throw new Win32Exception(1223, "The operation was canceled by the user.");
+        }
+        var result = await LocalHostingSetup.EnableAsync(store, Cancel, Verify);
+        Check(result == null && verifyCalls == 0, "Canceling elevation is a normal result and never contacts a host");
+        Check(store.State.Hosts.SequenceEqual([otherHost]) && new ProfileStore(taskRoot).State.Hosts.SequenceEqual([otherHost]), "Canceling first setup removes only its new connection in memory and on disk");
+        Check(!Directory.EnumerateFiles(taskRoot, "host-owner-*.tmp").Any(), "Canceling elevation removes the temporary credential file");
+        result = await LocalHostingSetup.EnableAsync(store, Cancel, Verify);
+        Check(result == null && store.State.Hosts.Count == 1, "Repeated cancellation does not accumulate broken host entries");
+
+        result = await LocalHostingSetup.EnableAsync(store, _ => Task.CompletedTask, Verify);
+        Check(result != null && verifyCalls == 1 && new ProfileStore(taskRoot).State.Hosts.Count == 2, "Retry after cancellation verifies and saves exactly one local host");
+        var savedProfile = File.ReadAllBytes(Path.Combine(taskRoot, "profile.bin"));
+        var previousLocal = result;
+        result = await LocalHostingSetup.EnableAsync(store, Cancel, Verify);
+        Check(result == null && store.State.Hosts.Contains(previousLocal!) && savedProfile.SequenceEqual(File.ReadAllBytes(Path.Combine(taskRoot, "profile.bin"))), "Canceling setup for an existing host preserves its exact saved connection and key");
+
+        var failedRoot = Path.Combine(taskRoot, "failed-setup");
+        var failedStore = new ProfileStore(failedRoot);
+        try
+        {
+            await LocalHostingSetup.EnableAsync(failedStore, _ => throw new IOException("Setup failed after initialization."), Verify);
+            throw new InvalidOperationException("A setup failure was treated as success.");
+        }
+        catch (IOException)
+        {
+            Check(new ProfileStore(failedRoot).State.Hosts.Single() == failedStore.State.Hosts.Single(), "A failure after setup starts keeps the owner key for recovery");
+            Check(!Directory.EnumerateFiles(failedRoot, "host-owner-*.tmp").Any(), "A setup failure also removes the temporary credential file");
+        }
+        var recoveryHost = failedStore.State.Hosts.Single();
+        await LocalHostingSetup.EnableAsync(failedStore, path =>
+        {
+            Check(File.ReadAllText(path) == recoveryHost.OwnerToken, "Retry after partial setup reuses the original owner key");
+            return Task.CompletedTask;
+        }, Verify);
+        Check(failedStore.State.Hosts.Count == 1, "Retry after partial setup never duplicates the host");
     }
     private static T Named<T>(MainWindow window, string name) where T : FrameworkElement => (T)window.FindName(name);
     private static void Click(MainWindow window, string name) => Named<Button>(window, name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

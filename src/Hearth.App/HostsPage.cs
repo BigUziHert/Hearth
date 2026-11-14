@@ -3,7 +3,6 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,7 +11,8 @@ using Hearth.Core;
 namespace Hearth.App;
 public partial class MainWindow
 {
-    private void ShowHosts()
+    private void ShowHosts() => ShowHosts(expandLocal: false);
+    private void ShowHosts(bool expandLocal)
     {
         PageStart("hosts", "Hosting", "");
         if (store.State.Hosts.Count == 0)
@@ -84,7 +84,7 @@ public partial class MainWindow
         stop.IsEnabled = false;
         localContent.Children.Add(Row(enable, stop));
         _ = UpdateServiceStatus(serviceState, enable, stop);
-        add.Children.Add(new Expander { Header = "Host on this PC", Content = localContent, Margin = new(0, 2, 0, 5) });
+        add.Children.Add(new Expander { Header = "Host on this PC", Content = localContent, IsExpanded = expandLocal, Margin = new(0, 2, 0, 5) });
         var localHost = store.State.Hosts.FirstOrDefault(h => new Uri(h.Url).IsLoopback);
         var network = new StackPanel { Margin = new(0, 12, 0, 2) };
         network.Children.Add(Text("1. Give your host a stable HTTPS address.", 14, true));
@@ -153,19 +153,21 @@ public partial class MainWindow
     }
     private async Task EnableHosting() => await Run("Setting up host service…", async ct =>
     {
-        var local = store.State.Hosts.FirstOrDefault(h => h.Url == "http://127.0.0.1:17842");
-        var token = local?.OwnerToken ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-        if (local == null) { local = new(Guid.NewGuid().ToString("N"), "This PC", "http://127.0.0.1:17842", token); store.State.Hosts.Add(local); store.Save(); }
-        var temp = Path.Combine(store.Root, "host-owner-" + Guid.NewGuid().ToString("N") + ".tmp");
-        await File.WriteAllTextAsync(temp, token, ct);
-        try
+        var local = await LocalHostingSetup.EnableAsync(store,
+            temp => ServiceScript("Enable-Hosting.ps1", ["-InstallDir", InstallDirectory, "-TokenFile", temp]),
+            async (host, cancellation) =>
+            {
+                using var api = new HearthApi(host.Url, host.OwnerToken);
+                _ = await api.HealthAsync(cancellation); await api.ListPacksAsync(cancellation);
+            }, ct);
+        if (local == null)
         {
-            await ServiceScript("Enable-Hosting.ps1", ["-InstallDir", InstallDirectory, "-TokenFile", temp]);
-            using var api = new HearthApi("http://127.0.0.1:17842", token); _ = await api.HealthAsync(ct); await api.ListPacksAsync(ct);
-            selectedHost = local; selectedPack = null; draft = null; published = null; ShowHosts();
-            Status("Hosting enabled. Open Manage packs to create a pack.");
+            ShowHosts(expandLocal: true);
+            Status("Hosting setup canceled. No changes were made to hosting.");
+            return;
         }
-        finally { if (File.Exists(temp)) File.Delete(temp); }
+        selectedHost = local; selectedPack = null; draft = null; published = null; ShowHosts();
+        Status("Hosting enabled. Open Manage packs to create a pack.");
     });
     private void OpenGuide()
     {
