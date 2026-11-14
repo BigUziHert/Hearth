@@ -2,7 +2,7 @@
 
 ## Join and play
 
-1. Install `Hearth-Setup-1.0.5-win-x64.exe` and open Hearth.
+1. Install `Hearth-Setup-1.0.6-win-x64.exe` and open Hearth.
 2. Select **Add modpack**, paste your friend's `hearth://join?...` invite, enter the name they know you by, and select **Request access**. You can also open an invite directly after installing Hearth.
 3. Select the pack in the sidebar. Open **⋯ → Member details & fingerprint** and tell the owner your name and fingerprint so they approve the correct request. Select **Check approval** after they approve you.
 4. The main button becomes **Set up Prism** if Minecraft setup is needed. Hearth downloads and verifies the official portable Windows launcher. Finish Prism's first-run wizard, then use **Settings → Accounts → Add Microsoft** inside Prism. Sign in with your own account that owns Minecraft Java and let Prism configure Java. You can reopen Prism from Hearth's **Settings → Open Prism**.
@@ -27,7 +27,7 @@ You can turn either option off here. These choices do not change the independent
 1. Install the same Hearth installer on the server PC. Open **Hosting → Host on this PC → Enable hosting** and accept Windows administrator elevation. This creates the independent `HearthHost` service with delayed automatic startup and restart recovery. Closing Hearth does not stop it. Canceling the administrator prompt leaves hosting unchanged and does not add a new host connection; you can retry **Enable hosting** later.
 2. Return to **Hosting** and expand **Host on this PC**. Confirm **Host service is running**. The local host listens on `http://127.0.0.1:17842`; keep the Minecraft world server on its existing port.
 3. Expand the local connection's **Connection options**, select **Copy owner key**, and save it securely. Use that key on your main PC to administer the host. Ordinary players get invites, never the owner key.
-4. Expand **Share outside your home**. Give the host a stable HTTPS address using one of the choices below, select **Enter public address**, then **Connect** with the same owner key. Use the public connection when sharing invites. A local test invite works only on the host PC.
+4. Give the host a stable HTTPS address using one of the choices below. In **Hosting → Connect an existing host**, enter that address and the owner key you copied, then select **Connect**. Use the public connection when sharing invites. A local test invite works only on the host PC.
 
 ### A stable tunnel, without router changes
 

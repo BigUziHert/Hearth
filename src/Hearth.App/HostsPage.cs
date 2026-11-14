@@ -28,7 +28,7 @@ public partial class MainWindow
                 var card = Card(host.Name, host.Url);
                 var health = Text("Checking connection…", 13, false, "#ADBAB1"); card.Children.Add(health);
                 _ = CheckHostConnection(host, health);
-                if (local) card.Children.Add(Text("Local address. Set up a public address below before inviting friends on other networks.", 12, false, "#D8B36B"));
+                if (local) card.Children.Add(Text("Local address. Friends on other networks need a reachable host address.", 12, false, "#D8B36B"));
                 card.Children.Add(Row(Button("Manage packs", () =>
                 {
                     if (selectedHost?.Id != host.Id) { selectedPack = null; draft = null; published = null; }
@@ -65,8 +65,7 @@ public partial class MainWindow
             store.Save(); selectedHost = host; selectedPack = null; published = null; draft = null;
             ShowOwnerPackList(); Status("Host connected.");
         }))));
-        var remote = new Expander { Header = "Connect an existing host", Content = remoteContent, IsExpanded = false, Margin = new(0, 3, 0, 13) };
-        add.Children.Add(remote);
+        add.Children.Add(new Expander { Header = "Connect an existing host", Content = remoteContent, IsExpanded = false, Margin = new(0, 3, 0, 13) });
         var localContent = new StackPanel { Margin = new(0, 12, 0, 8) };
         localContent.Children.Add(Text("The host shares modpack files. Your Minecraft world server stays separate.", 13, false, "#ADBAB1"));
         var serviceState = Text("Checking the Windows service…", 13, true); localContent.Children.Add(serviceState);
@@ -85,22 +84,6 @@ public partial class MainWindow
         localContent.Children.Add(Row(enable, stop));
         _ = UpdateServiceStatus(serviceState, enable, stop);
         add.Children.Add(new Expander { Header = "Host on this PC", Content = localContent, IsExpanded = expandLocal, Margin = new(0, 2, 0, 5) });
-        var localHost = store.State.Hosts.FirstOrDefault(h => new Uri(h.Url).IsLoopback);
-        var network = new StackPanel { Margin = new(0, 12, 0, 2) };
-        network.Children.Add(Text("1. Give your host a stable HTTPS address.", 14, true));
-        network.Children.Add(Text("Use a tunnel or a reverse proxy pointing to http://127.0.0.1:17842. Keep Minecraft on its own port.", 13, false, "#ADBAB1"));
-        network.Children.Add(Row(Button("Open setup guide", OpenGuide, true)));
-        network.Children.Add(Text("2. Connect the public address in Hearth.", 14, true));
-        network.Children.Add(Text("Use the same owner key. Manage and share packs from that connection.", 13, false, "#ADBAB1"));
-        network.Children.Add(Row(Button("Enter public address", () =>
-        {
-            remote.IsExpanded = true; url.Text = "https://";
-            if (localHost != null) { key.Password = localHost.OwnerToken; name.Text = localHost.Name + " · public"; }
-            remote.BringIntoView(); url.Focus();
-        }, true)));
-        network.Children.Add(Text("3. Check with a friend on another network.", 14, true));
-        network.Children.Add(Text("Ask them to request access, approve them, then have them press Play. The host's connection status shows their last successful request.", 13, false, "#ADBAB1"));
-        add.Children.Add(new Expander { Header = "Share outside your home", Content = network, Margin = new(0, 14, 0, 0), IsExpanded = false });
     }
 
     private async Task CheckHostConnection(HostConnection host, TextBlock label)
