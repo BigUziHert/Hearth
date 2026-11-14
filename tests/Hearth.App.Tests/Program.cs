@@ -286,6 +286,7 @@ internal sealed class LibraryFixture : IDisposable
         try { while (!cancellation.IsCancellationRequested) _ = Respond(await listener.AcceptTcpClientAsync(cancellation.Token)); }
         catch (OperationCanceledException) { }
         catch (SocketException) when (cancellation.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (cancellation.IsCancellationRequested) { }
     }
     private async Task Respond(TcpClient client)
     {
@@ -307,6 +308,7 @@ internal sealed class LibraryFixture : IDisposable
             }
             catch (OperationCanceledException) { }
             catch (IOException) { }
+            catch (ObjectDisposedException) when (cancellation.IsCancellationRequested) { }
         }
     }
     public void Dispose() { cancellation.Cancel(); listener.Stop(); cancellation.Dispose(); }

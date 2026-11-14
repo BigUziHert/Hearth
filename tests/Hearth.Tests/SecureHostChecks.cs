@@ -115,7 +115,9 @@ internal static class SecureHostChecks
                 {
                     TcpClient client;
                     try { client = await listener.AcceptTcpClientAsync(stop.Token); }
-                    catch (OperationCanceledException) { break; }
+                    catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
+                    catch (SocketException) when (stop.IsCancellationRequested) { break; }
+                    catch (ObjectDisposedException) when (stop.IsCancellationRequested) { break; }
                     using (client)
                     using (var ssl = new SslStream(client.GetStream(), false))
                     {

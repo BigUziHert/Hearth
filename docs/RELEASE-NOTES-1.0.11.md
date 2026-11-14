@@ -1,4 +1,4 @@
-# Hearth 1.0.10
+# Hearth 1.0.11
 
 Hosting now creates secure connections directly inside Hearth. Enable hosting, approve the Windows firewall permission, and Hearth generates home-network links and attempts automatic Internet setup through the router. Owners no longer need to install or configure a tunnel, reverse proxy, domain, or certificate.
 
