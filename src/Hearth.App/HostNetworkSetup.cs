@@ -167,6 +167,24 @@ public sealed class HostNetworkSetup : IDisposable
 
 public sealed class HostNetworkException(string message) : IOException(message);
 
+internal sealed record HostFirewallRuleSnapshot
+{
+    public string Name { get; init; } = "";
+    public string Program { get; init; } = "";
+    public bool Enabled { get; init; }
+    public int Direction { get; init; }
+    public int Action { get; init; }
+    public int Protocol { get; init; }
+    public string LocalPorts { get; init; } = "";
+    public string RemotePorts { get; init; } = "";
+    public int Profiles { get; init; }
+    public string LocalAddresses { get; init; } = "";
+    public string RemoteAddresses { get; init; } = "";
+    public string InterfaceTypes { get; init; } = "";
+    public bool HasInterfaceRestriction { get; init; }
+    public string ServiceName { get; init; } = "";
+}
+
 public sealed class WindowsHostNetworkPlatform : IHostNetworkPlatform
 {
     private readonly string executable;
@@ -219,28 +237,72 @@ public sealed class WindowsHostNetworkPlatform : IHostNetworkPlatform
             // Once launched, let the narrowly scoped elevation finish; do not leave a detached rule writer.
             await process.WaitForExitAsync().ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
-            if (process.ExitCode != 0 || !FirewallReady()) throw new IOException("Windows did not allow incoming Hearth connections. Retry hosting and approve the Windows permission request.");
+            if (process.ExitCode != 0) throw new IOException($"The Windows hosting helper failed (exit code {process.ExitCode}). Retry connection setup to finish configuring the firewall.");
+            if (!FirewallReady()) throw new IOException("Windows completed the permission step, but Hearth could not verify a firewall rule for incoming hosting connections. Retry connection setup.");
         }
         return true;
     }
     private bool FirewallReady()
     {
-        object? policy = null; object? rules = null; object? rule = null;
+        object? policy = null; object? rules = null;
+        System.Collections.IEnumerator? iterator = null;
+        var snapshots = new List<HostFirewallRuleSnapshot>();
         try
         {
             policy = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2")!);
-            rules = ((dynamic)policy!).Rules; rule = ((dynamic)rules).Item(ruleName); dynamic value = rule;
-            return value.Enabled && value.Direction == 1 && value.Action == 1 && value.Protocol == 6
-                && string.Equals((string)value.ApplicationName, executable, StringComparison.OrdinalIgnoreCase)
-                && (string)value.LocalPorts == port.ToString() && (((int)value.Profiles & 7) == 7);
+            rules = ((dynamic)policy!).Rules;
+            iterator = ((System.Collections.IEnumerable)rules).GetEnumerator();
+            while (iterator.MoveNext())
+            {
+                object? rule = iterator.Current;
+                try
+                {
+                    dynamic value = rule!;
+                    // COM Name is the friendly display name, unlike NetSecurity's stable Name.
+                    // Enumerate every candidate so duplicate display names cannot hide a valid rule.
+                    // Port getters are invalid for ICMP; inspect TCP before reading them.
+                    if ((int)value.Protocol != 6 || !SameProgram((string?)value.ApplicationName, executable)) continue;
+                    object? interfaces = value.Interfaces;
+                    snapshots.Add(new()
+                    {
+                        Name = (string?)value.Name ?? "", Program = (string?)value.ApplicationName ?? "",
+                        Enabled = (bool)value.Enabled, Direction = (int)value.Direction, Action = (int)value.Action,
+                        Protocol = (int)value.Protocol, LocalPorts = (string?)value.LocalPorts ?? "",
+                        RemotePorts = (string?)value.RemotePorts ?? "", Profiles = (int)value.Profiles,
+                        LocalAddresses = (string?)value.LocalAddresses ?? "", RemoteAddresses = (string?)value.RemoteAddresses ?? "",
+                        InterfaceTypes = (string?)value.InterfaceTypes ?? "", ServiceName = (string?)value.ServiceName ?? "",
+                        HasInterfaceRestriction = interfaces is Array array ? array.Length > 0 : interfaces != null && interfaces != DBNull.Value
+                    });
+                }
+                catch (Exception error) when (error is COMException or FileNotFoundException or InvalidCastException) { /* Ignore an unreadable unrelated rule. */ }
+                finally { if (rule != null && Marshal.IsComObject(rule)) Marshal.FinalReleaseComObject(rule); }
+            }
+            return AllowsHosting(snapshots, executable, port);
         }
         // The COM "rule not found" HRESULT is surfaced as FileNotFoundException by .NET.
         // Missing permission is normal on first run, not a failure to start hosting.
         catch (Exception error) when (error is COMException or FileNotFoundException or TypeLoadException or ArgumentException) { return false; }
         finally
         {
-            foreach (var item in new[] { rule, rules, policy }) if (item != null && Marshal.IsComObject(item)) Marshal.FinalReleaseComObject(item);
+            (iterator as IDisposable)?.Dispose();
+            foreach (var item in new object?[] { iterator, rules, policy }) if (item != null && Marshal.IsComObject(item)) Marshal.FinalReleaseComObject(item);
         }
+    }
+    internal static bool AllowsHosting(IEnumerable<HostFirewallRuleSnapshot> rules, string executable, int port) => rules.Any(rule =>
+        rule.Enabled && rule.Direction == 1 && rule.Action == 1 && rule.Protocol == 6
+        && SameProgram(rule.Program, executable) && rule.LocalPorts == port.ToString() && (rule.Profiles & 7) == 7
+        && AnyScope(rule.RemotePorts) && AnyScope(rule.LocalAddresses) && AnyScope(rule.RemoteAddresses)
+        && rule.InterfaceTypes.Equals("All", StringComparison.OrdinalIgnoreCase) && !rule.HasInterfaceRestriction && string.IsNullOrEmpty(rule.ServiceName));
+    private static bool AnyScope(string value) => value == "*" || value.Equals("Any", StringComparison.OrdinalIgnoreCase);
+    private static bool SameProgram(string? value, string executable)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        try
+        {
+            var expanded = Environment.ExpandEnvironmentVariables(value);
+            return Path.IsPathFullyQualified(expanded) && Path.GetFullPath(expanded).Equals(Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or IOException) { return false; }
     }
     public async Task<IPAddress?> GetPublicAddressAsync(CancellationToken ct)
     {

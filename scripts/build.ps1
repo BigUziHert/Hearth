@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 [CmdletBinding()]
-param([switch]$SkipTests, [switch]$SkipInstaller, [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.0.12', [string]$IsccPath)
+param([switch]$SkipTests, [switch]$SkipInstaller, [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.0.13', [string]$IsccPath)
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repo

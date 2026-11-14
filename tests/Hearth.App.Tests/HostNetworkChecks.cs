@@ -8,6 +8,7 @@ internal static class HostNetworkChecks
 {
     public static async Task RunAsync(Action<bool, string> check)
     {
+        CheckFirewallScope(check);
         // Exercise Windows' real COM HRESULT translation. A unique rule name is absent, and the
         // noninteractive branch is read-only: it cannot launch elevation or write firewall rules.
         var nativeProfile = Path.Combine(Path.GetTempPath(), "Hearth-absent-firewall-" + Guid.NewGuid().ToString("N"));
@@ -93,6 +94,33 @@ internal static class HostNetworkChecks
         check(HostNetworkSetup.IsPublicIPv4(IPAddress.Parse("8.8.8.8")) && HostNetworkSetup.IsPublicIPv4(IPAddress.Parse("100.128.0.1")),
             "Public IPv4 classification retains valid addresses bordering the carrier-grade NAT range");
         await CheckMappingProtocols(check);
+    }
+
+    private static void CheckFirewallScope(Action<bool, string> check)
+    {
+        var executable = Path.Combine(Path.GetTempPath(), "Hearth firewall matcher", "host", "Hearth.Host.exe");
+        var correct = new HostFirewallRuleSnapshot
+        {
+            Name = "Hearth modpack hosting", Program = executable, Enabled = true, Direction = 1, Action = 1, Protocol = 6,
+            LocalPorts = "17843", RemotePorts = "*", Profiles = int.MaxValue, LocalAddresses = "*", RemoteAddresses = "*", InterfaceTypes = "All"
+        };
+        check(WindowsHostNetworkPlatform.AllowsHosting([correct], executable, 17843),
+            "Firewall readiness recognizes a valid friendly-name rule without confusing it with a NetSecurity internal ID");
+        var restricted = new[]
+        {
+            correct with { Program = Path.Combine(Path.GetTempPath(), "another-profile", "Hearth.Host.exe") },
+            correct with { LocalPorts = "17842" }, correct with { Enabled = false }, correct with { Action = 0 },
+            correct with { Direction = 2 }, correct with { Protocol = 17 }, correct with { Profiles = 3 },
+            correct with { RemoteAddresses = "LocalSubnet" }, correct with { LocalAddresses = "192.168.1.42" },
+            correct with { RemotePorts = "443" }, correct with { ServiceName = "UnrelatedService" },
+            correct with { InterfaceTypes = "Wireless" }, correct with { HasInterfaceRestriction = true }
+        };
+        check(restricted.All(rule => !WindowsHostNetworkPlatform.AllowsHosting([rule], executable, 17843)),
+            "Firewall readiness rejects wrong program, port, action, protocol, enabled state, profiles, service, interface, and narrowed address or source-port scopes");
+        check(WindowsHostNetworkPlatform.AllowsHosting(restricted.Append(correct), executable, 17843),
+            "Duplicate friendly rule names with unrelated scopes cannot hide the matching hosting rule");
+        check(WindowsHostNetworkPlatform.AllowsHosting([correct with { Profiles = 7, Program = executable.ToUpperInvariant() }], executable, 17843),
+            "Firewall readiness accepts all three profile bits and Windows case-insensitive executable paths");
     }
 
     private static async Task CheckMappingProtocols(Action<bool, string> check)

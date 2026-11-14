@@ -9,12 +9,12 @@ The same installer contains the launcher and optional hosting. Hosting runs whil
 ## Start here
 
 - [Download the latest Windows installer](https://github.com/BigUziHert/Hearth/releases/latest)
-- Local installer: `artifacts/Hearth-Setup-1.0.12-win-x64.exe`
-- Local source archive: `artifacts/Hearth-Source-1.0.12.zip`
+- Local installer: `artifacts/Hearth-Setup-1.0.13-win-x64.exe`
+- Local source archive: `artifacts/Hearth-Source-1.0.13.zip`
 - [First-time hosting, publishing, and joining](docs/FIRST-RUN.md)
 - [Verification and remaining manual checks](docs/VERIFICATION.md)
 - [HTTP protocol and host data](docs/HOST-PROTOCOL.md)
-- [Changes in 1.0.12](docs/RELEASE-NOTES-1.0.12.md)
+- [Changes in 1.0.13](docs/RELEASE-NOTES-1.0.13.md)
 
 ## Startup and the system tray
 
@@ -73,11 +73,11 @@ Hearth checks [official releases](https://github.com/BigUziHert/Hearth) from **S
 The [Windows release workflow](.github/workflows/windows-release.yml) builds and tests pull requests and main-branch changes. A `v*` tag also publishes a complete stable GitHub release after all checks pass. To release a later version:
 
 1. Set `Directory.Build.props` to the new version, update script defaults and add `docs/RELEASE-NOTES-VERSION.md`.
-2. Commit and push the source, then push a matching tag such as `v1.0.12`. Tag and source version must match exactly.
-3. The workflow builds `Hearth-Setup-1.0.12-win-x64.exe`, a source ZIP, and `SHA256SUMS.txt`; uploads them to a draft; verifies the expected installer; and publishes the complete release.
+2. Commit and push the source, then push a matching tag such as `v1.0.13`. Tag and source version must match exactly.
+3. The workflow builds `Hearth-Setup-1.0.13-win-x64.exe`, a source ZIP, and `SHA256SUMS.txt`; uploads them to a draft; verifies the expected installer; and publishes the complete release.
 4. In an older Hearth, open **Settings → Updates**, then use **Check for updates → Download update → Restart to update**.
 
-For a manual release, run `scripts/build.ps1 -Version 1.0.12` after changing the source version, then upload the resulting installer, source ZIP, and checksums to a stable `v1.0.12` release. The release must contain exactly one Windows installer whose version matches the tag. Do not replace files in a published release; publish a higher version.
+For a manual release, run `scripts/build.ps1 -Version 1.0.13` after changing the source version, then upload the resulting installer, source ZIP, and checksums to a stable `v1.0.13` release. The release must contain exactly one Windows installer whose version matches the tag. Do not replace files in a published release; publish a higher version.
 
 The updater checks the GitHub asset digest or exact filename in SHA256SUMS, verifies bytes before saving and again before executing, and reuses a verified cached download. Installer updates preserve profiles, Prism instances, and hosted packs. The first secure-host setup asks Windows permission for a scoped firewall rule; canceling leaves hosting disabled. Later launches reuse that rule without elevation. When upgrading an old independent `HearthHost` service, Windows asks once to retire it; canceling stops the upgrade before replacing the app. The existing host may still be running if approval is canceled. Installers are unsigned until a code-signing certificate is configured.
 

@@ -2,6 +2,12 @@
 
 The automated test harness starts a real ASP.NET Hearth host on an unused loopback port and uses separate local Alice and Bob profiles. Test JARs are synthetic archives with known content; they do not assert compatibility of a real Minecraft mod combination.
 
+## Version 1.0.13 firewall verification
+
+The installed Windows rule was successfully created by the permission helper, but COM exposes its friendly display name while NetSecurity exposes a separate internal Name. Querying COM by the internal identifier therefore produced a false missing-rule result. The fix enumerates candidates and verifies the actual executable, TCP port, inbound allow action, enabled state, all Windows profiles, and unrestricted addresses, source ports, service and interfaces. It does not modify an existing rule merely to recognize it.
+
+All **145 app/profile/WPF component checks pass**, including wrong-scope and duplicate-display-name cases and real read-only Windows lookup for an absent rule. A separate probe calls the production noninteractive firewall check with the normal profile and the actually installed host executable; it now recognizes the existing user-approved rule. The probe does not elevate, change firewall rules, configure the router or start hosting. Helper process errors and post-helper verification failures have separate messages.
+
 ## Version 1.0.12 secure hosting and automatic setup
 
 The final tagged [Windows workflow](https://github.com/BigUziHert/Hearth/actions/runs/43620535461) passed and published [v1.0.12](https://github.com/BigUziHert/Hearth/releases/tag/v1.0.12). The production updater checked, downloaded, verified and installed the public installer (90,690,935 bytes; SHA-256 `8abb51cf53116399948cf70808be1644ccc98058b515f4c1161642512e5ba0d5`). Installer exit code was 0. The installed product is `1.0.12+8d47403fdae24f4ab0a5058282dccf5390908ffe`; exactly one launcher and one owned host restarted, and local health reports 1.0.12. A subsequent official update check reports no newer version. The public installer/source/checksums were copied into local artifacts and independently verified.
