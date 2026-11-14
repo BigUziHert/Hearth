@@ -2,6 +2,16 @@
 
 The automated test harness starts a real ASP.NET Hearth host on an unused loopback port and uses separate local Alice and Bob profiles. Test JARs are synthetic archives with known content; they do not assert compatibility of a real Minecraft mod combination.
 
+## Version 1.0.14 imported mods, storage, and hosting actions
+
+Local verification passes **139 core/integration checks**, **205 app/profile/WPF checks**, **17 isolated launcher lifecycle scenarios and owned-host runtime checks**, **9 legacy migration checks**, and **46 HTTP security checks**. The lifecycle fixture was updated to check the running status and the new Enable hosting action instead of the removed disabled Hosting enabled/Retry hosting labels; its actual crash/restart/access assertions are retained. Logs: `artifacts/build-1.0.14.log`, `lifecycle-1.0.14.log`, `legacy-1.0.14.log`, `host-security-1.0.14.log`.
+
+Mod checks cover Explorer file-drop payloads and quoted copied paths, multi-file imports, immutable verified snapshots, custom JAR replacement, invalid/mixed selections, duplicate filenames with different bytes, cancellation, local case-insensitive filtering and selection clearing, and authenticated verified copying of published files. WPF tests exercise the actual paste-to-draft path and confirm editing makes no publish request. The user's system clipboard was not overwritten by tests. Imported-list search has no online catalog. App-rendered screenshots at 1280×850 and 1000×720 were checked without enabling desktop screen capture (`artifacts/ui-1.0.14`).
+
+Instance relocation tests preserve exact world, keybind, graphics, custom-mod, memory-setting, and managed-record bytes. They cover a retained original backup, running-game guards, occupied/overlapping/linked paths, unavailable custom drives, cancellation, interrupted copying, failed preference saves, retry, returning to an empty default directory, and persisted UI configuration. The normal player profile was not used for these tests. Real Prism 11.1.1 parsed the production-generated setting and loaded a fixture instance from a chosen directory containing spaces and a comma; see `artifacts/instance-prism-probe/probe.log`. Microsoft sign-in and a full Minecraft game session were not repeated.
+
+Hosting action checks cover off, running without network setup, LAN-only, firewall-incomplete, fully configured sharing, unexpected stop, and disabled-with-stale-network states. The backend firewall/router and cancellation behavior is unchanged. Outside-network connectivity remains dependent on the owner's network and was not newly tested.
+
 ## Version 1.0.13 firewall verification
 
 The [tagged Windows workflow](https://github.com/BigUziHert/Hearth/actions/runs/43623561657) passed and published [v1.0.13](https://github.com/BigUziHert/Hearth/releases/tag/v1.0.13). The official updater downloaded, verified, installed and reopened the public build with exit code 0; a subsequent check reports no update. The installer SHA-256 is `1ddf578cd46503f366f20e7ab1808953a7f029014bb6bb7d24a73801f97357e2`. Public installer/source/checksums are verified in local artifacts.

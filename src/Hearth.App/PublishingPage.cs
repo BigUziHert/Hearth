@@ -206,7 +206,7 @@ public partial class MainWindow
         var path = DraftPath(host.Id, pack.Id);
         var loaded = File.Exists(path) ? JsonSerializer.Deserialize<DraftState>(File.ReadAllText(path), JsonDefaults.Options) : null;
         loaded ??= new() { BaseReleaseId = latest?.ReleaseId, Files = latest?.Files.Select(f => new DraftItem(f, null)).ToList() ?? [] };
-        selectedHost = host; selectedPack = latestPack; published = latest; draft = loaded;
+        selectedHost = host; selectedPack = latestPack; published = latest; draft = loaded; modFilter = "";
         RenderEditor(); Status("Draft saved on this PC. Players receive changes after you publish.");
     });
     private void PackEditorHeader(string tab)
@@ -227,26 +227,33 @@ public partial class MainWindow
         var editor = Card("Mods", $"Minecraft {pack.MinecraftVersion} · {LoaderName(pack.Loader)} {pack.LoaderVersion} · {(pack.ReleaseId == null ? "Not published" : "Published")}");
         if (draft.BaseReleaseId != published?.ReleaseId)
             editor.Children.Add(Text("A newer release is available. Your draft has been kept. Discard this draft to reopen the current release before publishing.", 13, false, "#D8B36B"));
-        var modActions = Row(Button("Add mods…", () => ChooseMods("base"))); editor.Children.Add(modActions);
-        fileList = new ListBox { MinHeight = 130, MaxHeight = 330, SelectionMode = SelectionMode.Extended, AllowDrop = true };
-        fileList.DragOver += (_, e) => { e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
-        fileList.Drop += (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] files) _ = AddFiles(files, groupOverride: "base"); };
+        var modActions = Row(Button("Add files…", () => ChooseMods("base")), Button("Paste mods", PasteMods, true)); editor.Children.Add(modActions);
+        var filter = Field(editor, "Search imported mods", modFilter);
+        filter.MinHeight = 0; filter.Height = 38; filter.Padding = new Thickness(10, 6, 10, 6);
+        filter.ToolTip = "Filter this pack's imported mods by filename or mod group.";
+        filter.TextChanged += (_, _) => { modFilter = filter.Text.Trim(); RefreshDraft(); };
+        fileList = new ListBox { MinHeight = 130, MaxHeight = 330, SelectionMode = SelectionMode.Extended };
+        AttachModImport(editor.Parent as FrameworkElement ?? editor);
         editor.Children.Add(fileList);
-        editor.Children.Add(Text("Drop .jar files here to add required mods, including your own builds.", 12, false, "#ADBAB1"));
+        editor.Children.Add(Text("Drop .jar files anywhere in this card, or copy files in Explorer and press Ctrl+V here. Custom JARs work too.", 12, false, "#ADBAB1"));
         var replace = Button("Replace…", () =>
         {
             if (SelectedDraftItems().SingleOrDefault() is not DraftItem item) return;
             var dialog = new OpenFileDialog { Filter = "Minecraft mods|*.jar" };
             if (dialog.ShowDialog(this) == true) _ = AddFiles([dialog.FileName], item);
         }, true);
-        var remove = Button("Remove", () =>
+        var remove = Button("Remove", () => _ = Run("Removing mods from the draft…", _ =>
         {
-            foreach (var file in SelectedDraftItems()) draft.Files.Remove(file);
-            SaveDraft(); RefreshDraft();
-        }, true);
-        replace.IsEnabled = remove.IsEnabled = false;
-        fileList.SelectionChanged += (_, _) => { var count = SelectedDraftItems().Count; replace.IsEnabled = count == 1; remove.IsEnabled = count > 0; };
-        modActions.Children.Add(replace); modActions.Children.Add(remove);
+            var selected = SelectedDraftItems();
+            SaveDraftFiles(draft.Files.Except(selected).ToList()); RefreshDraft();
+            Status($"Removed {selected.Count} mod file(s) from the draft. Review & publish when ready.");
+            return Task.CompletedTask;
+        }), true);
+        var copy = Button("Copy", () => _ = CopySelectedMods(), true);
+        copy.ToolTip = "Copy selected JAR files to paste into another pack or folder (Ctrl+C).";
+        replace.IsEnabled = remove.IsEnabled = copy.IsEnabled = false;
+        fileList.SelectionChanged += (_, _) => { var count = SelectedDraftItems().Count; replace.IsEnabled = count == 1; remove.IsEnabled = copy.IsEnabled = count > 0; };
+        editor.Children.Add(Row(copy, replace, remove));
         var optional = new StackPanel { Margin = new(0, 10, 0, 5) };
         optional.Children.Add(Text("Let players choose Voxy, Distant Horizons, or Off. Downloads include required dependencies.", 13, false, "#ADBAB1"));
         optional.Children.Add(Row(Button("Add Voxy", () => _ = AddTerrain(TerrainMode.Voxy), true), Button("Add Distant Horizons", () => _ = AddTerrain(TerrainMode.DistantHorizons), true)));
@@ -309,16 +316,10 @@ public partial class MainWindow
     private async Task AddFiles(string[] paths, DraftItem? replacing = null, string? groupOverride = null) => await Run("Checking mods…", async ct =>
     {
         if (draft == null) return;
-        var staged = new List<DraftItem>();
-        foreach (var path in paths)
-        {
-            ct.ThrowIfCancellationRequested(); var file = await ModFiles.InspectAsync(path, replacing?.File.Group ?? groupOverride ?? "base", ct);
-            staged.Add(new(file, path));
-        }
+        var staged = await DraftModImport.StageAsync(paths, store.Root, replacing?.File.Group ?? groupOverride ?? "base", ct);
         ct.ThrowIfCancellationRequested();
-        if (replacing != null) draft.Files.Remove(replacing);
-        foreach (var item in staged) { draft.Files.RemoveAll(f => f.File.Path.Equals(item.File.Path, StringComparison.OrdinalIgnoreCase) && f.File.Group == item.File.Group); draft.Files.Add(item); }
-        SaveDraft(); RefreshDraft(); Status("Draft saved.");
+        SaveDraftFiles(DraftModImport.Apply(draft.Files, staged, replacing));
+        modFilter = ""; RenderEditor(); Status($"Added {staged.Count} mod file(s) to the draft. Review & publish when ready.");
     });
     private async Task AddTerrain(TerrainMode mode) => await Run("Finding compatible terrain mods…", async ct =>
     {
@@ -354,10 +355,12 @@ public partial class MainWindow
     {
         if (fileList == null || draft == null) return;
         fileList.Items.Clear();
-        if (draft.Files.Count == 0) fileList.Items.Add(new ListBoxItem { Content = Text("No mods added yet.", 13, false, "#ADBAB1"), IsEnabled = false });
+        var visible = draft.Files.Where(x => FileName(x.File).Contains(modFilter, StringComparison.OrdinalIgnoreCase)
+            || GroupName(x.File.Group).Contains(modFilter, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (visible.Count == 0) fileList.Items.Add(new ListBoxItem { Content = Text(draft.Files.Count == 0 ? "No mods added yet." : "No mods match your search.", 13, false, "#ADBAB1"), IsEnabled = false });
         foreach (var group in new[] { "base", "voxy", "distanthorizons" })
         {
-            var files = draft.Files.Where(x => x.File.Group == group).OrderBy(x => x.File.Path, StringComparer.OrdinalIgnoreCase).ToList();
+            var files = visible.Where(x => x.File.Group == group).OrderBy(x => x.File.Path, StringComparer.OrdinalIgnoreCase).ToList();
             if (files.Count == 0) continue;
             fileList.Items.Add(new ListBoxItem { Content = Text($"{GroupName(group)} · {files.Count}", 12, true, "#ADBAB1"), IsEnabled = false, Opacity = 1, Padding = new(8, 12, 8, 2) });
             foreach (var item in files)

@@ -16,9 +16,14 @@ public sealed class PackSynchronizer
 {
     private const string RecordRecovery = "The saved pack record is missing or damaged. Restore .hearth/installed.json from a backup, or move this instance folder aside before installing again. Your worlds and settings haven't been changed.";
     public string ProfileRoot { get; }
-    public PackSynchronizer(string profileRoot) => ProfileRoot = Path.GetFullPath(profileRoot);
+    public string InstanceDirectory { get; }
+    public PackSynchronizer(string profileRoot, string? instanceDirectory = null)
+    {
+        ProfileRoot = Path.GetFullPath(profileRoot);
+        InstanceDirectory = InstanceStorage.Resolve(ProfileRoot, instanceDirectory);
+    }
     public string GetInstanceId(string hostUrl, string packId) => "hearth-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(HearthApi.NormalizeHost(hostUrl) + "\n" + packId)))[..24];
-    public string GetInstanceDirectory(string hostUrl, string packId) => Path.Combine(ProfileRoot, "Prism", "instances", GetInstanceId(hostUrl, packId));
+    public string GetInstanceDirectory(string hostUrl, string packId) => Path.Combine(InstanceDirectory, GetInstanceId(hostUrl, packId));
     public InstalledPack? GetInstalled(string hostUrl, string packId)
     {
         var path = Path.Combine(GetInstanceDirectory(hostUrl, packId), ".hearth", "installed.json");
@@ -31,7 +36,7 @@ public sealed class PackSynchronizer
         ct.ThrowIfCancellationRequested();
         var instance = GetInstanceDirectory(hostUrl, packId);
         RejectLinks(Path.Combine(instance, ".hearth"));
-        PrismService.EnsureNotRunning(instance);
+        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"));
         Directory.CreateDirectory(Path.Combine(instance, ".hearth"));
         using var syncLock = AcquireLock(instance);
         Recover(instance);
@@ -42,7 +47,7 @@ public sealed class PackSynchronizer
         ct.ThrowIfCancellationRequested();
         var instance = GetInstanceDirectory(hostUrl, packId);
         RejectLinks(Path.Combine(instance, ".hearth"));
-        PrismService.EnsureNotRunning(instance);
+        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"));
         Directory.CreateDirectory(Path.Combine(instance, ".hearth"));
         using var syncLock = AcquireLock(instance);
         Recover(instance);
@@ -112,7 +117,7 @@ public sealed class PackSynchronizer
         Directory.CreateDirectory(Path.Combine(instance, ".hearth"));
         RejectLinks(instance);
         using var syncLock = AcquireLock(instance);
-        PrismService.EnsureNotRunning(instance);
+        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"));
         Recover(instance);
         progress?.Report(new("Checking your access and the latest complete release…"));
         var manifest = await api.ManifestAsync(pack.PackId, ct);
@@ -169,7 +174,7 @@ public sealed class PackSynchronizer
         var newInstalled = new InstalledPack(HearthApi.NormalizeHost(pack.InstallationUrl), pack.PackId, manifest.ReleaseId, pack.Terrain, selected, manifest);
         ct.ThrowIfCancellationRequested();
         // Check again after network activity, in case the user opened Prism while downloads ran.
-        PrismService.EnsureNotRunning(instance);
+        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"));
         var txn = Path.Combine(instance, ".hearth", "transaction");
         Directory.CreateDirectory(Path.Combine(txn, "backup"));
         Directory.CreateDirectory(Path.Combine(txn, "new"));

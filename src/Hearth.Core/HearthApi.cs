@@ -154,7 +154,7 @@ public sealed class HearthApi : IDisposable
         await EnsureSuccess(response, ct);
         progress?.Report(new("Uploaded " + file.Path, file.Size, file.Size));
     }
-    internal async Task DownloadAsync(string packId, PackFile file, string destination, IProgress<SyncProgress>? progress, CancellationToken ct)
+    public async Task DownloadAsync(string packId, PackFile file, string destination, IProgress<SyncProgress>? progress, CancellationToken ct)
     {
         using var request = Request(HttpMethod.Get, $"/packs/{Id(packId)}/blobs/{Id(file.Sha256)}");
         using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);

@@ -12,8 +12,8 @@ namespace Hearth.App;
 public partial class MainWindow : Window
 {
     private readonly ProfileStore store;
-    private readonly PackSynchronizer sync;
-    private readonly PrismService prism;
+    private PackSynchronizer sync;
+    private PrismService prism;
     private CancellationTokenSource? operation;
     private string activePage = "library";
     private string pendingInvite = "";
@@ -30,7 +30,7 @@ public partial class MainWindow : Window
     private TaskCompletionSource? operationFinished;
     public MainWindow(ProfileStore profile)
     {
-        InitializeComponent(); store = profile; sync = new(store.Root); prism = new(store.Root);
+        InitializeComponent(); store = profile; sync = new(store.Root, store.State.InstanceDirectory); prism = new(store.Root, store.State.InstanceDirectory);
         ProfileLabel.Text = store.State.DisplayName.ToUpperInvariant(); VersionLabel.Text = "HEARTH  " + AppInfo.Version;
         BrandIcon.Content = PackArtwork.Create(0, 30);
         LibraryNav.Content = IconLabel("My modpacks", "M2,2 L8,2 8,8 2,8 Z M12,2 L18,2 18,8 12,8 Z M2,12 L8,12 8,18 2,18 Z M12,12 L18,12 18,18 12,18 Z");

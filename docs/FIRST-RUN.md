@@ -2,7 +2,7 @@
 
 ## Join and play
 
-1. Install `Hearth-Setup-1.0.13-win-x64.exe` and open Hearth.
+1. Install `Hearth-Setup-1.0.14-win-x64.exe` and open Hearth.
 2. Select **Add modpack**, paste your friend's `hearth://join?...` invite, enter the name they know you by, and select **Request access**. You can also open an invite directly after installing Hearth.
 3. Select the pack in the sidebar. Open **⋯ → Member details & fingerprint** and tell the owner your name and fingerprint so they approve the correct request. Select **Check approval** after they approve you.
 4. The main button becomes **Set up Prism** if Minecraft setup is needed. Hearth downloads and verifies the official portable Windows launcher. Finish Prism's first-run wizard, then use **Settings → Accounts → Add Microsoft** inside Prism. Sign in with your own account that owns Minecraft Java and let Prism configure Java. You can reopen Prism from Hearth's **Settings → Open Prism**.
@@ -21,6 +21,12 @@ In **Settings → Startup & closing**, choose either option independently. Both 
 - **Start Hearth with Windows**: open Hearth when your Windows account signs in after starting the PC. This starts the launcher after sign-in, not before login. If **Close to system tray** is also enabled, it starts quietly in the tray.
 
 You can turn either option off here. If this PC hosts packs, hosting continues while Hearth is open, minimized, or in the tray. **Quit Hearth** stops hosting. Closing the window stops hosting too when **Close to system tray** is off. Hearth remembers enabled hosting and resumes it when the app next opens. Enable **Start Hearth with Windows** to resume it after you sign in following a reboot. Updates keep your preferences, and uninstall removes automatic startup for the normal launcher profile.
+
+## Choose an instance folder
+
+Open **Settings → Instance location → Change folder…** and choose an empty folder, such as `D:\Minecraft`. Hearth copies all existing instances, verifies the copies, then saves the new location. Worlds, keybinds, graphics settings, screenshots, and personal files move with each instance. The previous folder stays as a backup, shown in Settings; it uses disk space until you remove it yourself after checking the new location.
+
+Close Minecraft and the Hearth Prism window first. Canceling or a failed transfer keeps the old location active. If Hearth closes just before saving the new location, choose the same destination again to finish. Do not move the folder manually or change Prism's instance-directory setting independently; Hearth configures Prism to use the selected folder. Microsoft account settings and Prism itself remain in Hearth's app data folder.
 
 ## Host from your always-on Windows PC
 
@@ -47,8 +53,8 @@ Quit Hearth and confirm that your friend can no longer refresh or download from 
 ## Create, publish, and share
 
 1. Open **Manage modpacks**, choose the host, and select **New pack**. Enter the pack name, Minecraft version, mod loader, and loader version, then **Create pack**. Compatible version lists load automatically; choose versions that match your mods.
-2. On the **Mods** tab, add or drag in JARs, including custom builds. Select an existing file to **Replace** or **Remove** it. The published release stays unchanged while you edit.
-3. Always-required mods belong in **Base**. Under **Optional terrain mods**, **Add Voxy** and **Add Distant Horizons** fetch matching Modrinth versions and required dependencies. **Choose .jar files** lets you supply tested JARs manually. Put dependencies also needed by the pack in Base so switching Off keeps them. Test exact versions together before publishing; catalog matching and valid hashes do not prove game compatibility.
+2. On the **Mods** tab, use **Add files…**, drag JARs onto the Mods card, or copy JAR files in Explorer and use **Paste mods** / **Ctrl+V**. **Search imported mods** filters the mods already in this pack by filename or group; it does not search an online catalog. Select existing files to **Copy**, **Replace…**, or **Remove** them. The published release stays unchanged while you edit. Imported JARs are copied into Hearth draft storage, so rebuilding or deleting the original file does not change the draft.
+3. Always-required mods belong in **Required mods**. Under **Optional terrain mods**, **Add Voxy** and **Add Distant Horizons** fetch matching Modrinth versions and required dependencies. **Choose .jar files** lets you supply tested JARs manually. Put dependencies also needed by the pack in Required mods so switching Off keeps them. Test exact versions together before publishing; catalog matching and valid hashes do not prove game compatibility.
 4. Select **Review & publish** at the top of the pack editor, inspect added/replaced/removed files, then **Publish**. The host makes a release visible only after every referenced upload is verified.
 5. Open **Members** and select **Copy internet invite** for outside friends or **Copy same-network invite** for someone on the same network. If sharing is not ready, use **Set up hosting** to finish setup. Use **Refresh requests**, compare fingerprints, and **Approve** each friend. Every pack has separate approvals; a forwarded link grants no downloads.
 6. **Remove** blocks a person's future authorized downloads. **Make owner** allows that person to publish and manage this pack. Owners can open **⋯ → Manage as owner** from their joined pack.

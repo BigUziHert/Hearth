@@ -5,9 +5,10 @@ using System.Text.Json;
 
 namespace Hearth.Core;
 
-public sealed class PrismService(string profileRoot)
+public sealed class PrismService(string profileRoot, string? instanceDirectory = null)
 {
     public string ProfileRoot { get; } = Path.GetFullPath(profileRoot);
+    public string InstanceDirectory { get; } = InstanceStorage.Resolve(profileRoot, instanceDirectory);
     public string PrismDataDirectory => Path.Combine(ProfileRoot, "Prism");
     public string? FindExecutable()
     {
@@ -78,9 +79,9 @@ public sealed class PrismService(string profileRoot)
     public Process Launch(string executable, string instanceId)
     {
         if (instanceId != Path.GetFileName(instanceId) || !instanceId.StartsWith("hearth-", StringComparison.Ordinal) || instanceId.Contains('\\') || instanceId.Contains('/')) throw new ArgumentException("Invalid instance identifier.");
-        var instance = Path.Combine(PrismDataDirectory, "instances", instanceId);
+        var instance = Path.Combine(InstanceDirectory, instanceId);
         if (!File.Exists(Path.Combine(instance, ".hearth", "installed.json"))) throw new IOException("Install this pack with Play before launching it.");
-        EnsureNotRunning(instance);
+        EnsureNotRunning(instance, PrismDataDirectory);
         return Start(executable, instanceId);
     }
     public ProcessStartInfo BuildStartInfo(string executable, string? instanceId = null)
@@ -94,10 +95,37 @@ public sealed class PrismService(string profileRoot)
     }
     private Process Start(string executable, string? instanceId)
     {
-        Directory.CreateDirectory(PrismDataDirectory);
+        ConfigureInstanceDirectory();
         return Process.Start(BuildStartInfo(executable, instanceId)) ?? throw new IOException("Windows could not start Prism.");
     }
-    public static void EnsureNotRunning(string instanceDirectory)
+    public void ConfigureInstanceDirectory()
+    {
+        Directory.CreateDirectory(PrismDataDirectory);
+        var config = Path.Combine(PrismDataDirectory, "prismlauncher.cfg");
+        var original = File.Exists(config) ? File.ReadAllText(config) : "[General]\r\nAutomaticJavaDownload=true\r\nAutomaticJavaSwitch=true\r\n";
+        var lines = original.Replace("\r\n", "\n").Split('\n').ToList();
+        var general = lines.FindIndex(line => line.Trim() == "[General]");
+        if (general < 0) { lines.Insert(0, "[General]"); general = 0; }
+        var end = lines.FindIndex(general + 1, line => line.TrimStart().StartsWith('['));
+        if (end < 0) end = lines.Count;
+        var value = InstanceDirectory.Replace('\\', '/');
+        // Qt INI treats leading @ and comma specially; quoted values preserve ordinary Windows paths.
+        value = "InstanceDir=\"" + value.Replace("\"", "\\\"") + "\"";
+        var found = false;
+        for (var i = end - 1; i > general; i--)
+            if (lines[i].StartsWith("InstanceDir=", StringComparison.Ordinal))
+            {
+                if (!found) { lines[i] = value; found = true; }
+                else lines.RemoveAt(i);
+            }
+        if (!found) lines.Insert(general + 1, value);
+        var updated = string.Join("\r\n", lines);
+        if (updated == original) return;
+        EnsureNotRunning(Path.Combine(InstanceDirectory, ".hearth-location-check"), PrismDataDirectory);
+        File.WriteAllText(config + ".hearth.tmp", updated);
+        File.Move(config + ".hearth.tmp", config, true);
+    }
+    public static void EnsureNotRunning(string instanceDirectory, string? prismDataDirectory = null)
     {
         if (!OperatingSystem.IsWindows()) return;
         var hasCandidates = false;
@@ -118,8 +146,8 @@ public sealed class PrismService(string profileRoot)
         using var query = Process.Start(start) ?? throw new IOException("Could not check running Minecraft instances.");
         var outputTask = query.StandardOutput.ReadToEndAsync();
         var errorTask = query.StandardError.ReadToEndAsync();
-        if (!query.WaitForExit(15000)) { try { query.Kill(); } catch { } throw new IOException("Could not verify whether Minecraft is running. Close this pack's Minecraft and Prism before updating."); }
-        if (query.ExitCode != 0) throw new IOException("Could not verify whether Minecraft is running. Close this pack's Minecraft and Prism before updating.");
+        if (!query.WaitForExit(15000)) { try { query.Kill(); } catch { } throw new IOException("Could not verify whether Minecraft is running. Close Minecraft and the Hearth Prism window, then try again."); }
+        if (query.ExitCode != 0) throw new IOException("Could not verify whether Minecraft is running. Close Minecraft and the Hearth Prism window, then try again.");
         var output = outputTask.GetAwaiter().GetResult();
         _ = errorTask.GetAwaiter().GetResult();
         if (string.IsNullOrWhiteSpace(output)) return;
@@ -132,14 +160,14 @@ public sealed class PrismService(string profileRoot)
             // A service or another Windows user's Java process may not expose its command line.
             // Those processes cannot normally access this user's private Hearth profile. Do not
             // block an unrelated always-on Minecraft server merely because it is protected.
-            if (IsInstanceProcess(name, command, instanceDirectory)) throw new IOException("Close Minecraft and the Hearth Prism window before updating or switching terrain mods. Then press Play again.");
+            if (IsInstanceProcess(name, command, instanceDirectory, prismDataDirectory)) throw new IOException("Close Minecraft and the Hearth Prism window before updating packs or changing their folder. Then try again.");
         }
     }
-    public static bool IsInstanceProcess(string processName, string? commandLine, string instanceDirectory)
+    public static bool IsInstanceProcess(string processName, string? commandLine, string instanceDirectory, string? prismDataDirectory = null)
     {
         if (commandLine is null) return false;
         var instance = Path.GetFullPath(instanceDirectory);
-        var prismRoot = Directory.GetParent(Directory.GetParent(instance)!.FullName)!.FullName;
+        var prismRoot = prismDataDirectory ?? Directory.GetParent(Directory.GetParent(instance)!.FullName)!.FullName;
         // Qt and Java can spell Windows paths with either separator. Boundaries
         // also prevent C:\Hearth from matching the unrelated C:\HearthTest profile.
         var arguments = Regex.Matches(commandLine.Replace('/', '\\'), "(?:[^\\s\"]+|\"[^\"]*\")+")

@@ -257,7 +257,8 @@ internal static class Program
                 break;
             case "host-retry":
                 ((Button)window.FindName("HostsNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                Check(Descendants(window).OfType<Button>().Any(button => Equals(button.Content, "Hosting enabled") && !button.IsEnabled),
+                Check(Descendants(window).OfType<TextBlock>().Any(text => text.Text == "Hosting is running")
+                    && Descendants(window).OfType<Button>().Any(button => Equals(button.Content, "Enable hosting") && button.Visibility == Visibility.Collapsed),
                     "The hosting page initially reports the running host");
                 var stoppedPid = app.LocalHost.ProcessId;
                 using (var stoppedHost = Process.GetProcessById(stoppedPid!.Value))
@@ -266,11 +267,11 @@ internal static class Program
                     await stoppedHost.WaitForExitAsync();
                 }
                 await OwnedHostChecks.WaitUntilAsync(() => Task.FromResult(
-                    Descendants(window).OfType<Button>().Any(button => Equals(button.Content, "Retry hosting") && button.IsEnabled)
+                    Descendants(window).OfType<Button>().Any(button => Equals(button.Content, "Enable hosting") && button.IsEnabled && button.Visibility == Visibility.Visible)
                     && Descendants(window).OfType<TextBlock>().Any(text => text.Text.StartsWith("Hosting is stopped", StringComparison.Ordinal))),
                     "The current hosting page did not notice an unexpected host exit.");
-                Check(true, "Unexpected host exit updates the visible status and enables Retry without leaving the page");
-                var retry = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "Retry hosting"));
+                Check(true, "Unexpected host exit updates the visible status and offers Enable hosting without leaving the page");
+                var retry = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "Enable hosting"));
                 retry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 await OwnedHostChecks.WaitUntilAsync(() => Task.FromResult(app.LocalHost.IsRunning
                     && ((FrameworkElement)window.FindName("MainContent")).IsEnabled), "Retry did not restore the host.");

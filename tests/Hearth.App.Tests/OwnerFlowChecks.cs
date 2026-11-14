@@ -50,15 +50,16 @@ internal static class OwnerFlowChecks
             Finish((Task)Invoke(window, "AddFiles", new[] { firstJar }, null, "base")!, "Adding a custom JAR finishes");
             var draft = Get<DraftState>(window, "draft");
             var originalCustom = draft.Files.Single(item => item.File.Path == "mods/custom.jar");
-            check(draft.BaseReleaseId == "release-one" && originalCustom.LocalPath == firstJar, "Adding a JAR stages it in a draft based on the current release");
+            check(draft.BaseReleaseId == "release-one" && originalCustom.LocalPath != firstJar && File.ReadAllBytes(originalCustom.LocalPath!).SequenceEqual(File.ReadAllBytes(firstJar)), "Adding a JAR snapshots its bytes in a draft based on the current release");
             Finish((Task)Invoke(window, "AddFiles", new[] { secondJar }, originalCustom, null)!, "Replacing a custom JAR finishes");
             draft = Get<DraftState>(window, "draft");
+            var replacementPath = draft.Files.Single(item => item.File.Path == "mods/custom.jar").LocalPath;
             check(draft.Files.Count(item => item.File.Path == "mods/custom.jar") == 1
                 && draft.Files.Single(item => item.File.Path == "mods/custom.jar").File.Sha256 != originalCustom.File.Sha256,
                 "Replacing a custom JAR leaves exactly one new version in the draft");
             Invoke(window, "ShowOwnerPackList");
             Finish((Task)Invoke(window, "OpenEditor", fixture.Pack)!, "Owner can leave and reopen a saved draft");
-            check(Get<DraftState>(window, "draft").Files.Any(item => item.LocalPath == secondJar), "Leaving the editor and reopening restores the unpublished replacement");
+            check(Get<DraftState>(window, "draft").Files.Any(item => item.LocalPath == replacementPath), "Leaving the editor and reopening restores the unpublished replacement");
 
             var list = Get<ListBox>(window, "fileList");
             list.SelectedItem = list.Items.OfType<ListBoxItem>().Single(item => item.Tag is DraftItem draftItem && draftItem.File.Path == "mods/custom.jar");
@@ -71,7 +72,7 @@ internal static class OwnerFlowChecks
             fixture.AdvanceRelease();
             Finish((Task)Invoke(window, "PublishDraft")!, "Stale publish preflight finishes without uploading");
             check(fixture.UploadRequests == 0 && fixture.PublishRequests == 0, "A stale draft is detected before uploading or attempting a publish");
-            check(Get<DraftState>(window, "draft").Files.Any(item => item.LocalPath == secondJar)
+            check(Get<DraftState>(window, "draft").Files.Any(item => item.LocalPath == replacementPath)
                 && !FindButton(window, "Review & publish").IsEnabled
                 && Descendants(window).OfType<TextBlock>().Any(text => text.Text.Contains("Your draft has been kept")),
                 "A newer release preserves unpublished edits and shows an actionable stale-draft state");

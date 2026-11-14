@@ -9,6 +9,8 @@ public sealed class ProfileState
     public string DisplayName { get; set; } = Environment.UserName;
     public List<HostConnection> Hosts { get; set; } = [];
     public List<JoinedPack> Packs { get; set; } = [];
+    public string InstanceDirectory { get; set; } = "";
+    public string PreviousInstanceDirectory { get; set; } = "";
     public string PrismExecutable { get; set; } = "";
     public string SelectedPackHost { get; set; } = "";
     public string SelectedPackId { get; set; } = "";

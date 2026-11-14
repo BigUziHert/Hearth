@@ -93,12 +93,6 @@ public partial class MainWindow
                         }, true)));
                     }
                     card.Children.Add(Text("Friends join with a pack invite from Manage packs → Members. Host connection links are for managing packs from another PC.", 12, false, "#ADBAB1"));
-                    card.Children.Add(Row(Button("Retry connection setup", () => _ = Run("Setting up secure connections…", async ct =>
-                    {
-                        if (Application.Current is not App current) return;
-                        try { await current.RetryHostNetworkAsync(ct); }
-                        finally { ShowHosts(expandLocal: true); }
-                    }), true)));
                 }
                 var manage = Button("Manage packs", () =>
                 {
@@ -180,16 +174,26 @@ public partial class MainWindow
             localContent.Children.Add(Text("Original owner key", 12, true));
             recoveryKey = new PasswordBox { Margin = new(0, 5, 0, 12) }; localContent.Children.Add(recoveryKey);
         }
-        var enable = Button(running ? "Hosting enabled" : store.State.LocalHostingEnabled ? "Retry hosting" : "Enable hosting", () => _ = EnableHosting(recoveryKey?.Password));
-        enable.IsEnabled = !running;
+        var enable = Button("Enable hosting", () => _ = EnableHosting(recoveryKey?.Password));
+        var retry = Button("Retry connection setup", () => _ = Run("Setting up secure connections…", async ct =>
+        {
+            if (Application.Current is not App current) return;
+            // Repair applies only to a running host. A stopped host has one startup action.
+            if (current.LocalHost?.IsRunning != true)
+            {
+                ShowHosts(expandLocal: true); Status("Hosting is stopped. Choose Enable hosting to start it."); return;
+            }
+            try { await current.RetryHostNetworkAsync(ct); }
+            finally { ShowHosts(expandLocal: true); }
+        }), true);
+        retry.ToolTip = "Restart hosting and retry Windows firewall and router setup. Active mod downloads may need to retry.";
         var stop = Button("Disable hosting", () => _ = Run("Stopping host…", async _ =>
         {
             if (Application.Current is not App current) return;
             await current.DisableHostingAsync();
             ShowHosts(expandLocal: true); Status("Hosting disabled. Your packs and owner key were kept.");
         }), true);
-        stop.IsEnabled = running || store.State.LocalHostingEnabled;
-        localContent.Children.Add(Row(enable, stop));
+        localContent.Children.Add(Row(enable, retry, stop));
         add.Children.Add(new Expander { Header = "Host on this PC", Content = localContent, IsExpanded = expandLocal || running || store.State.LocalHostingEnabled, Margin = new(0, 2, 0, 5) });
         var previousRunning = running;
         var previousNetwork = app?.LocalHost?.Network?.Result;
@@ -198,13 +202,11 @@ public partial class MainWindow
             if (!busy && !ReferenceEquals(previousNetwork, app?.LocalHost?.Network?.Result))
             { ShowHosts(expandLocal: true); return; }
             var currentRunning = app?.LocalHost?.IsRunning == true;
-            localStatus.Text = currentRunning ? "Hosting is running" : store.State.LocalHostingEnabled ? "Hosting is stopped — retry to start it" : "Hosting is off";
+            localStatus.Text = currentRunning ? "Hosting is running" : store.State.LocalHostingEnabled ? "Hosting is stopped — choose Enable hosting to start it" : "Hosting is off";
             var error = !string.IsNullOrEmpty(app?.HostingError) ? app.HostingError : app?.LocalHost?.LastError;
             localError.Text = error ?? "";
             localError.Visibility = string.IsNullOrEmpty(error) ? Visibility.Collapsed : Visibility.Visible;
-            enable.Content = currentRunning ? "Hosting enabled" : store.State.LocalHostingEnabled ? "Retry hosting" : "Enable hosting";
-            enable.IsEnabled = !currentRunning;
-            stop.IsEnabled = currentRunning || store.State.LocalHostingEnabled;
+            UpdateHostingActions(currentRunning, store.State.LocalHostingEnabled, app?.LocalHost?.Network?.Result, enable, retry, stop);
             foreach (var card in ownedHostCards)
             {
                 card.Manage.IsEnabled = currentRunning;
@@ -218,11 +220,20 @@ public partial class MainWindow
         hostingStatusTimer.Start();
     }
 
+    internal static void UpdateHostingActions(bool running, bool enabled, HostNetworkResult? network, Button enable, Button retry, Button stop)
+    {
+        enable.Visibility = running ? Visibility.Collapsed : Visibility.Visible;
+        retry.Visibility = running && (network?.FirewallReady != true || string.IsNullOrWhiteSpace(network?.PublicAddress))
+            ? Visibility.Visible : Visibility.Collapsed;
+        // A failed automatic start must still let the owner disable future automatic attempts.
+        stop.Visibility = running || enabled ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private async Task CheckHostConnection(HostConnection host, TextBlock label)
     {
         if (IsOwnedHost(host) && (Application.Current as App)?.LocalHost?.IsRunning != true)
         {
-            label.Text = store.State.LocalHostingEnabled ? "Hosting is stopped. Retry under Host on this PC." : "Hosting is off. Enable it below to manage and share packs.";
+            label.Text = store.State.LocalHostingEnabled ? "Hosting is stopped. Choose Enable hosting under Host on this PC." : "Hosting is off. Enable it below to manage and share packs.";
             return;
         }
         label.Text = "Checking connection…";
@@ -247,7 +258,7 @@ public partial class MainWindow
             }
             else if (response.StatusCode is HttpStatusCode.Unauthorized) text += "\nReconnect with a valid owner key.";
             label.Text = IsOwnedHost(host) && (Application.Current as App)?.LocalHost?.IsRunning != true
-                ? "Hosting is stopped. Retry under Host on this PC." : text;
+                ? "Hosting is stopped. Choose Enable hosting under Host on this PC." : text;
         }
         catch (Exception ex) { label.Text = "Could not reach this host. Check its connection and try again."; label.ToolTip = ex.Message; }
     }

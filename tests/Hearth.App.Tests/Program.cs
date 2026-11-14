@@ -48,7 +48,16 @@ internal static class Program
             hostingChecks.GetAwaiter().GetResult();
             CheckWindows(Path.Combine(taskRoot, "windows"));
             OwnerFlowChecks.Run(Path.Combine(taskRoot, "owner-flow"), Check, Await);
+            var imports = ModImportChecks.RunAsync(Path.Combine(taskRoot, "mod-import"), Check);
+            Await(() => imports.IsCompleted, "Mod import regression scenarios complete");
+            imports.GetAwaiter().GetResult();
+            ModImportChecks.RunUi(Path.Combine(taskRoot, "mod-import-ui"), Check, Await);
+            var locationChecks = InstanceLocationChecks.RunAsync(Path.Combine(taskRoot, "instance-location"), Check);
+            Await(() => locationChecks.IsCompleted, "Instance location scenarios complete");
+            locationChecks.GetAwaiter().GetResult();
+            InstanceLocationChecks.RunUi(Path.Combine(taskRoot, "instance-location-ui"), Check, Await);
             HostingMigrationFlowChecks.Run(Path.Combine(taskRoot, "migration-flow"), Check);
+            HostingActionChecks.Run(Path.Combine(taskRoot, "hosting-actions"), Check);
             var clientIdentity = ClientIdentityChecks.RunAsync(Path.Combine(taskRoot, "client-identity"), Check);
             Await(() => clientIdentity.IsCompleted, "Secure invite reconnection scenarios complete");
             clientIdentity.GetAwaiter().GetResult();
@@ -168,7 +177,7 @@ internal static class Program
     private static T Named<T>(MainWindow window, string name) where T : FrameworkElement => (T)window.FindName(name);
     private static void Click(MainWindow window, string name) => Named<Button>(window, name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     private static string Primary(MainWindow window) => AutomationProperties.GetName(Named<Button>(window, "PlayButton"));
-    private static void Capture(MainWindow window, string name, double width = 1280, double height = 850)
+    internal static void Capture(MainWindow window, string name, double width = 1280, double height = 850)
     {
         var output = Environment.GetEnvironmentVariable("HEARTH_SCREENSHOT_DIR");
         if (string.IsNullOrWhiteSpace(output)) return;

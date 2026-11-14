@@ -153,6 +153,8 @@ public partial class MainWindow
             });
         }, true)));
 
+        AddInstanceLocationSettings();
+
         var profile = Card("Profile");
         var displayName = Field(profile, "Name shown to pack owners", store.State.DisplayName);
         displayName.MaxLength = 80;
