@@ -50,8 +50,7 @@ internal static class ReliabilityChecks
         var worker = RunWorkerChecks(root, uiThread, check);
         wait(() => worker.IsCompleted, "File work finishes while the dispatcher keeps pumping"); worker.GetAwaiter().GetResult();
 
-        var installation = InstallResponsivenessChecks.RunAsync(Path.Combine(root, "large-install"), check);
-        wait(() => installation.IsCompleted, "The 150-mod installation and verification responsiveness checks finish"); installation.GetAwaiter().GetResult();
+        InstallResponsivenessChecks.Run(Path.Combine(root, "large-install"), check);
 
         using var fixture = new LibraryFixture();
         var local = new ProfileStore(Path.Combine(root, "local-off"));

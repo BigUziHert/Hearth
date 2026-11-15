@@ -2,7 +2,9 @@
 
 The automated test harness starts a real ASP.NET Hearth host on an unused loopback port and uses separate local Alice and Bob profiles. Test JARs are synthetic archives with known content; they do not assert compatibility of a real Minecraft mod combination.
 
-## Version 1.1.0 reliability and sharing
+## Version 1.1.1 reliability and sharing
+
+The initial v1.1.0 candidate was not published: its new 300 MiB test hit the existing 20-second total test deadline on GitHub. Version 1.1.1 gives only that test a two-minute completion deadline; the dispatcher responsiveness and cancellation assertions are unchanged. The app implementation is unchanged from the locally verified 1.1.0 candidate below.
 
 The full local Windows build passes **187 core/integration checks**, **292 profile/WPF component checks**, **17 isolated launcher lifecycle scenarios plus owned-host runtime checks**, **9 legacy migration checks**, and **46 HTTP security checks**. The installer and source-only archive were built and their versions and hashes verified. Logs: `artifacts/build-1.1.0.log` and `artifacts/host-security-1.1.0.log`; core evidence: `artifacts/verification/20261115-115159-78d733/report.json`.
 

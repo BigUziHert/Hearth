@@ -10,6 +10,22 @@ using Hearth.Core;
 
 internal static class InstallResponsivenessChecks
 {
+    public static void Run(string root, Action<bool, string> check)
+    {
+        var task = RunAsync(root, check); var deadline = Stopwatch.StartNew();
+        // Windows CI storage flushes can be slower than a desktop SSD. This is only
+        // the total completion deadline; UI heartbeat and cancel bounds stay strict.
+        while (!task.IsCompleted && deadline.Elapsed < TimeSpan.FromMinutes(2))
+        {
+            var frame = new DispatcherFrame();
+            var timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(10) };
+            timer.Tick += (_, _) => { timer.Stop(); frame.Continue = false; };
+            timer.Start(); Dispatcher.PushFrame(frame);
+        }
+        check(task.IsCompleted, "The 150-mod installation and verification responsiveness checks finish");
+        task.GetAwaiter().GetResult();
+    }
+
     public static async Task RunAsync(string root, Action<bool, string> check)
     {
         var fixture = await Task.Run(async () =>
