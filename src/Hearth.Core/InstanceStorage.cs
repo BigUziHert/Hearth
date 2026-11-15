@@ -12,8 +12,10 @@ public static class InstanceStorage
     public static string Resolve(string profileRoot, string? selectedDirectory) => string.IsNullOrWhiteSpace(selectedDirectory)
         ? DefaultDirectory(profileRoot) : Path.GetFullPath(selectedDirectory);
 
-    public static async Task MoveAsync(string profileRoot, string source, string target, Action<string> commit,
-        Action ensureNotRunning, IProgress<SyncProgress>? progress = null, CancellationToken ct = default)
+    public static Task MoveAsync(string profileRoot, string source, string target, Action<string> commit,
+        Action ensureNotRunning, IProgress<SyncProgress>? progress = null, CancellationToken ct = default) => Task.Run(() => MoveCoreAsync(profileRoot, source, target, commit, ensureNotRunning, progress, ct), ct);
+
+    private static async Task MoveCoreAsync(string profileRoot, string source, string target, Action<string> commit, Action ensureNotRunning, IProgress<SyncProgress>? progress, CancellationToken ct)
     {
         profileRoot = Full(profileRoot); source = Full(source); target = Full(target);
         if (Same(source, target)) return;

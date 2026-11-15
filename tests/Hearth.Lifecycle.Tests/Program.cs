@@ -18,6 +18,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Contains("--diagnostics"))
+            AppDomain.CurrentDomain.FirstChanceException += (_, error) => Console.Error.WriteLine(error.Exception.GetType().FullName + Environment.NewLine + error.Exception.StackTrace);
         if (args.Contains("--activate-only")) return RunActivation();
         var scenario = ValueAfter(args, "--scenario");
         if (scenario != null) return RunScenario(scenario, ValueAfter(args, "--profile")!);
@@ -138,7 +140,7 @@ internal static class Program
                             try { await Task.Delay(Timeout.Infinite, cancellation); }
                             finally { await Task.Delay(50); operationStopped = true; }
                         });
-                        _ = (Task)typeof(MainWindow).GetMethod("Run", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, ["Lifecycle test operation", operation])!;
+                        _ = (Task)typeof(MainWindow).GetMethod("Run", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, ["Lifecycle test operation", operation, false])!;
                         window.Close();
                         Check(!window.IsVisible, "Closing during an operation keeps it running in the tray");
                         exerciseCompleted = true;
@@ -234,8 +236,10 @@ internal static class Program
         var identity = await api.HealthAsync();
         await api.ListPacksAsync();
         Check(true, scenario + ": the open launcher serves authenticated hosting requests");
-        // Allow the startup operation's final UI cleanup to complete before testing Close.
-        await OwnedHostChecks.WaitUntilAsync(() => Task.FromResult(((FrameworkElement)window.FindName("MainContent")).IsEnabled), "Startup hosting did not release the window.");
+        // Startup now permits navigation, so enabled controls are no longer a completion signal.
+        // Wait for the verified connection commit before testing the post-startup lifecycle.
+        await OwnedHostChecks.WaitUntilAsync(() => Task.FromResult(new ProfileStore(profileRoot).State.Hosts.Any(host => host.HostId == identity.HostId)
+            && ((FrameworkElement)window.FindName("MainContent")).IsEnabled), "Startup hosting did not commit the verified connection.");
         var saved = new ProfileStore(profileRoot);
         Check(saved.State.Hosts.Single().OwnerToken == profile.State.LocalHostOwnerToken && saved.State.LocalHostingEnabled,
             scenario + ": startup saves one verified local host and preserves the owner key");
@@ -243,7 +247,10 @@ internal static class Program
         {
             case "host-window-close":
                 Check(window.IsVisible && !app.TrayAvailable, "Host is running with close-to-tray disabled");
-                window.Close();
+                await ChooseHostingCloseAsync(window, "Keep hosting in the tray");
+                Check(!window.IsVisible && app.TrayAvailable && app.LocalHost.IsRunning, "Close offers temporary tray hosting without changing the saved preference");
+                await Activate(profileRoot, startup: false);
+                await ChooseHostingCloseAsync(window, "Quit and stop hosting");
                 break;
             case "host-close-busy":
                 var operation = new Func<CancellationToken, Task>(async cancellation =>
@@ -251,12 +258,12 @@ internal static class Program
                     try { await Task.Delay(Timeout.Infinite, cancellation); }
                     finally { await Task.Delay(50); operationStopped(); }
                 });
-                _ = (Task)typeof(MainWindow).GetMethod("Run", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, ["Lifecycle test operation", operation])!;
-                window.Close();
+                _ = (Task)typeof(MainWindow).GetMethod("Run", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, ["Lifecycle test operation", operation, false])!;
+                await ChooseHostingCloseAsync(window, "Quit and stop hosting");
                 Check(!app.IsExiting, "Closing a busy window allows cancellation cleanup before exiting");
                 break;
             case "host-retry":
-                ((Button)window.FindName("HostsNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                ((Button)window.FindName("PublishNav")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Check(Descendants(window).OfType<TextBlock>().Any(text => text.Text == "Hosting is running")
                     && Descendants(window).OfType<Button>().Any(button => Equals(button.Content, "Enable hosting") && button.Visibility == Visibility.Collapsed),
                     "The hosting page initially reports the running host");
@@ -268,7 +275,7 @@ internal static class Program
                 }
                 await OwnedHostChecks.WaitUntilAsync(() => Task.FromResult(
                     Descendants(window).OfType<Button>().Any(button => Equals(button.Content, "Enable hosting") && button.IsEnabled && button.Visibility == Visibility.Visible)
-                    && Descendants(window).OfType<TextBlock>().Any(text => text.Text.StartsWith("Hosting is stopped", StringComparison.Ordinal))),
+                    && Descendants(window).OfType<TextBlock>().Any(text => text.Text == "Hosting is off on this PC")),
                     "The current hosting page did not notice an unexpected host exit.");
                 Check(true, "Unexpected host exit updates the visible status and offers Enable hosting without leaving the page");
                 var retry = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "Enable hosting"));
@@ -318,6 +325,15 @@ internal static class Program
                 break; // The parent terminates only this launcher process.
             default: throw new ArgumentException("Unknown hosting scenario.");
         }
+    }
+
+    private static async Task ChooseHostingCloseAsync(MainWindow window, string choice)
+    {
+        window.Close();
+        await OwnedHostChecks.WaitUntilAsync(() => Task.FromResult(window.OwnedWindows.OfType<Window>().Any(w => w.Title == "Keep hosting?")), "Hosting close choice was not shown.");
+        var dialog = window.OwnedWindows.OfType<Window>().Single(w => w.Title == "Keep hosting?");
+        Check(window.IsVisible, "Closing does not stop hosting before the user chooses");
+        Descendants(dialog).OfType<Button>().Single(b => Equals(b.Content, choice)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
 
     private static async Task CheckCrashCleanupAsync(string root)

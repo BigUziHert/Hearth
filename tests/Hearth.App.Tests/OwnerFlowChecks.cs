@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -45,6 +46,7 @@ internal static class OwnerFlowChecks
                 && File.ReadAllText(personalFile) == "key_key.forward:87", "Opening an owned pack preserves its terrain preference, instance identity, and personal files");
 
             Finish((Task)Invoke(window, "OpenEditor", fixture.Pack)!, "Owner editor loads the published release");
+            check(!FindButton(window, "Review & publish").IsEnabled, "An untouched published release cannot create a redundant release");
             var firstJar = Jar(root, "custom-one", "custom.jar", "custom build one");
             var secondJar = Jar(root, "custom-two", "custom.jar", "custom build two");
             Finish((Task)Invoke(window, "AddFiles", new[] { firstJar }, null, "base")!, "Adding a custom JAR finishes");
@@ -74,15 +76,19 @@ internal static class OwnerFlowChecks
             check(fixture.UploadRequests == 0 && fixture.PublishRequests == 0, "A stale draft is detected before uploading or attempting a publish");
             check(Get<DraftState>(window, "draft").Files.Any(item => item.LocalPath == replacementPath)
                 && !FindButton(window, "Review & publish").IsEnabled
-                && Descendants(window).OfType<TextBlock>().Any(text => text.Text.Contains("Your draft has been kept")),
+                && Descendants(window).OfType<TextBlock>().Any(text => text.Text.Contains("A newer release is available")),
                 "A newer release preserves unpublished edits and shows an actionable stale-draft state");
             Finish((Task)Invoke(window, "ResetDraft")!, "Discard reloads the current release");
             check(Get<DraftState>(window, "draft").BaseReleaseId == fixture.Pack.ReleaseId
                 && Get<DraftState>(window, "draft").Files.All(item => item.LocalPath == null)
-                && FindButton(window, "Review & publish").IsEnabled,
-                "Discard replaces the draft with the latest complete release and enables publishing again");
+                && !FindButton(window, "Review & publish").IsEnabled,
+                "Discard loads the latest complete release without creating phantom unpublished changes");
+
+            Finish((Task)Invoke(window, "PublishDraft")!, "An unchanged draft completes without publication");
+            check(fixture.PublishRequests == 0, "No-op publishing does not notify every player of a nonexistent update");
 
             fixture.ConflictOnNextPublish = true;
+            Get<DraftState>(window, "draft").Notes = "Notes changed during publication race";
             Finish((Task)Invoke(window, "PublishDraft")!, "Concurrent publication conflict refreshes the editor");
             check(fixture.PublishRequests == 1 && !FindButton(window, "Review & publish").IsEnabled
                 && Get<PackManifest>(window, "published").ReleaseId == fixture.Pack.ReleaseId,
@@ -129,6 +135,8 @@ internal sealed class OwnerFixture : IDisposable
 {
     public const string OwnerToken = "fixture-owner-credential-that-never-leaves-this-pc";
     private readonly WebApplication app;
+    private readonly Dictionary<string, byte[]> blobs = [];
+    private readonly Dictionary<string, PackManifest> releases = [];
     public string Url { get; }
     public PackSummary Pack { get; private set; } = new("owner-pack", "Owner pack", "1.21.1", "fabric", "0.16.10", "release-one", "fixture-invite");
     public PackManifest Manifest { get; private set; } = new("owner-pack", "release-one", "Owner pack", "1.21.1", "fabric", "0.16.10", [new("mods/required.jar", new string('a', 64), 42), new("mods/voxy.jar", new string('b', 64), 42, "voxy")]);
@@ -138,6 +146,17 @@ internal sealed class OwnerFixture : IDisposable
     public bool IsAdministrator = true;
     public OwnerFixture()
     {
+        PackFile Jar(string name, string id, string group)
+        {
+            using var bytes = new MemoryStream();
+            using (var zip = new ZipArchive(bytes, ZipArchiveMode.Create, true))
+            using (var writer = new StreamWriter(zip.CreateEntry("fabric.mod.json").Open()))
+                writer.Write(JsonSerializer.Serialize(new { schemaVersion = 1, id, version = "1.0" }));
+            var data = bytes.ToArray(); var hash = Convert.ToHexStringLower(SHA256.HashData(data)); blobs[hash] = data;
+            return new("mods/" + name, hash, data.Length, group);
+        }
+        Manifest = Manifest with { Files = [Jar("required.jar", "required", "base"), Jar("voxy.jar", "voxy", "voxy")] };
+        releases[Manifest.ReleaseId] = Manifest;
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
@@ -150,6 +169,7 @@ internal sealed class OwnerFixture : IDisposable
     {
         var release = Guid.NewGuid().ToString("N");
         Pack = Pack with { ReleaseId = release }; Manifest = Manifest with { ReleaseId = release };
+        releases[release] = Manifest;
     }
     private async Task Respond(HttpContext context)
     {
@@ -159,9 +179,20 @@ internal sealed class OwnerFixture : IDisposable
         if (path == "/owner/packs") result = new[] { Pack };
         else if (path == "/owner/status") { status = IsAdministrator ? 200 : 403; result = new { error = "Only the host owner can view status." }; }
         else if (path.EndsWith("/access")) result = new AccessResponse(request.Headers.Authorization == "Bearer " + OwnerToken ? "approved" : "pending", "owner", Pack.Name);
-        else if (path.EndsWith("/manifest")) result = Manifest;
+        else if (path.EndsWith("/manifest")) result = path.Contains("/releases/") ? releases.GetValueOrDefault(path.Split('/')[4], Manifest) : Manifest;
         else if (path.Contains("/blobs/"))
-        { Interlocked.Increment(ref UploadRequests); await request.Body.CopyToAsync(Stream.Null); result = new { uploaded = true }; }
+        {
+            var hash = path.Split('/').Last();
+            if (request.Method == "GET")
+            {
+                if (!blobs.TryGetValue(hash, out var bytes)) { context.Response.StatusCode = 404; return; }
+                context.Response.ContentType = "application/java-archive"; context.Response.ContentLength = bytes.Length;
+                await context.Response.Body.WriteAsync(bytes); return;
+            }
+            Interlocked.Increment(ref UploadRequests); using var output = new MemoryStream(); await request.Body.CopyToAsync(output); blobs[hash] = output.ToArray(); result = new { uploaded = true };
+        }
+        else if (path.EndsWith("/members")) result = Array.Empty<Hearth.Core.MemberInfo>();
+        else if (path.EndsWith("/invites")) result = Array.Empty<PersonalInviteInfo>();
         else if (path.EndsWith("/releases"))
         {
             Interlocked.Increment(ref PublishRequests);
@@ -172,7 +203,9 @@ internal sealed class OwnerFixture : IDisposable
             else
             {
                 var publish = await JsonSerializer.DeserializeAsync<PublishRequest>(request.Body, JsonDefaults.Options);
-                AdvanceRelease(); Manifest = Manifest with { Files = publish!.Files, Notes = publish.Notes }; result = Manifest;
+                AdvanceRelease(); Manifest = Manifest with { Files = publish!.Files, Notes = publish.Notes, Name = publish.Name, MinecraftVersion = publish.MinecraftVersion, Loader = publish.Loader, LoaderVersion = publish.LoaderVersion };
+                Pack = Pack with { Name = publish.Name, MinecraftVersion = publish.MinecraftVersion, Loader = publish.Loader, LoaderVersion = publish.LoaderVersion };
+                releases[Manifest.ReleaseId] = Manifest; result = Manifest;
             }
         }
         else { status = 404; result = new { error = "Unknown fixture route" }; }

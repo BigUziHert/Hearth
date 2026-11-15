@@ -24,7 +24,12 @@ public static class DraftModImport
             && p.EndsWith(".jar", StringComparison.OrdinalIgnoreCase));
     }
 
-    public static async Task<List<DraftItem>> StageAsync(IEnumerable<string> paths, string profileRoot, string group, CancellationToken ct)
+    public static Task<List<DraftItem>> StageAsync(IEnumerable<string> paths, string profileRoot, string group, CancellationToken ct)
+    {
+        var selected = paths.ToArray();
+        return Task.Run(() => StageCoreAsync(selected, profileRoot, group, ct), ct);
+    }
+    private static async Task<List<DraftItem>> StageCoreAsync(IEnumerable<string> paths, string profileRoot, string group, CancellationToken ct)
     {
         var sources = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (!AreJarPaths(sources)) throw new InvalidDataException("Choose or copy .jar files from File Explorer. Folders and web links cannot be added as mods.");

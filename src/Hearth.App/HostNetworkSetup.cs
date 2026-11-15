@@ -50,32 +50,53 @@ public sealed class HostNetworkSetup : IDisposable
     private Task? renewal;
     private IHostPortLease? lease;
     private bool disposed;
+    private CancellationTokenSource? recoveryCancellation;
+    private Task? recovery;
+    private readonly SemaphoreSlim networkChanged = new(0, 1);
+    private readonly TimeSpan recoveryDelay;
+    private string activeHostId = "";
+    private volatile bool refreshRequested;
+    public event EventHandler? ResultChanged;
     public HostNetworkResult? Result { get; private set; }
 
-    public HostNetworkSetup(string profileRoot, string hostExecutable, int httpsPort = 17843, IHostNetworkPlatform? platform = null)
+    public HostNetworkSetup(string profileRoot, string hostExecutable, int httpsPort = 17843, IHostNetworkPlatform? platform = null,
+        TimeSpan? recoveryDelay = null)
     {
         if (httpsPort is < 1024 or > 65535) throw new ArgumentOutOfRangeException(nameof(httpsPort));
         port = httpsPort;
         this.platform = platform ?? new WindowsHostNetworkPlatform(profileRoot, hostExecutable, httpsPort);
+        this.recoveryDelay = recoveryDelay ?? TimeSpan.FromSeconds(5);
+    }
+
+    public Task<bool> EnsureFirewallAsync(bool interactive, CancellationToken ct = default) => platform.PrepareFirewallAsync(interactive, ct);
+    private HostNetworkResult SetResult(HostNetworkResult result)
+    {
+        Result = result; ResultChanged?.Invoke(this, EventArgs.Empty); return result;
     }
 
     public async Task<HostNetworkResult> PrepareAsync(string hostId, bool interactive, CancellationToken ct = default)
     {
         await gate.WaitAsync(ct).ConfigureAwait(false);
+        var replacingLease = false;
         try
         {
             ObjectDisposedException.ThrowIf(disposed, this);
+            // Preserve the current mapping and advertised links if Windows permission is cancelled.
+            var firewallReady = await platform.PrepareFirewallAsync(interactive, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            replacingLease = true;
             await StopLeaseAsync().ConfigureAwait(false);
-            Result = null;
-            var routes = platform.GetRoutes();
+            SetResult(new(Result?.LocalAddresses ?? [], null, firewallReady, false,
+                "Checking sharing addresses. Hearth will retry automatically if the network is not ready."));
+            var routes = await Task.Run(platform.GetRoutes, ct).ConfigureAwait(false);
             var addresses = routes.Select(route => $"https://{route.LocalAddress}:{port}").Distinct().ToArray();
             // Ask for elevation before any router mutation. A canceled UAC propagates to the caller,
             // which must not save an enabled host entry.
-            if (!await platform.PrepareFirewallAsync(interactive, ct).ConfigureAwait(false))
-                return Result = new(addresses, null, false, false,
-                    "Windows has not allowed hosting connections. Open Hosting and choose Retry connection setup to finish the Windows permission step.");
+            if (!firewallReady)
+                return SetResult(new(addresses, null, false, false,
+                    "Windows has not allowed hosting connections. Open Share packs and choose Retry connection setup to finish the Windows permission step."));
             if (routes.Count == 0)
-                return Result = new(addresses, null, true, false, "No home network connection was found. Connect to Wi-Fi or Ethernet and retry sharing.");
+                return SetResult(new(addresses, null, true, false, "No home network connection was found. Hearth will retry automatically when the network is available."));
 
             IPAddress? observed = null;
             try { observed = await platform.GetPublicAddressAsync(ct).ConfigureAwait(false); }
@@ -85,8 +106,8 @@ public sealed class HostNetworkSetup : IDisposable
             // A server with a public address directly on its NIC needs no router mapping. Merely
             // learning an Internet address is insufficient: it must match an actual local interface.
             if (observed != null && IsPublicIPv4(observed) && routes.Any(route => route.LocalAddress.Equals(observed)))
-                return Result = new(addresses, $"https://{observed}:{port}", true, false,
-                    "Secure sharing is configured using this PC's public address. A friend connecting from another network will confirm it is reachable.");
+                return SetResult(new(addresses, $"https://{observed}:{port}", true, false,
+                    "Secure sharing is configured using this PC's public address. A friend connecting from another network will confirm it is reachable."));
             string? mappingIssue = null;
             foreach (var route in routes.Take(3))
             {
@@ -99,25 +120,82 @@ public sealed class HostNetworkSetup : IDisposable
             }
             ct.ThrowIfCancellationRequested();
             if (lease == null)
-                return Result = new(addresses, null, true, false, mappingIssue ?? "Sharing works on your home network. Your router did not allow automatic Internet sharing. Retry after reconnecting, or use a network that permits incoming connections.");
+                return SetResult(new(addresses, null, true, false, mappingIssue ?? "Sharing works on your home network. Your router did not allow automatic Internet sharing. Hearth will retry automatically, or you can use your own address."));
             if (!IsPublicIPv4(lease.ExternalAddress) || (observed != null && !observed.Equals(lease.ExternalAddress)))
             {
                 await lease.DisposeAsync().ConfigureAwait(false); lease = null;
-                return Result = new(addresses, null, true, false,
-                    "Sharing works on your home network. Another router or your Internet provider is blocking direct Internet sharing. Ask your Internet provider whether incoming connections and a public IP are available. Hearth cannot open this network automatically.");
+                return SetResult(new(addresses, null, true, false,
+                    "Sharing works on your home network. Another router or your Internet provider is blocking direct Internet sharing. You can use your own reachable address."));
             }
             var address = $"https://{lease.ExternalAddress}:{lease.ExternalPort}";
-            Result = new(addresses, address, true, true, "Internet sharing is configured automatically. A friend connecting from another network will confirm it is reachable.");
+            var configured = SetResult(new(addresses, address, true, true, "Internet sharing is configured automatically. A friend connecting from another network will confirm it is reachable."));
             renewalCancellation = new();
             renewal = RenewLeaseAsync(lease, renewalCancellation.Token);
-            return Result;
+            return configured;
         }
         catch
         {
-            await StopLeaseAsync().ConfigureAwait(false);
+            if (replacingLease)
+            {
+                await StopLeaseAsync().ConfigureAwait(false);
+                if (Result is { } interrupted) SetResult(interrupted with { PublicAddress = null, RouterMapped = false,
+                    Status = "Sharing setup was interrupted. Hosting is still running and Hearth will retry automatically." });
+                WakeRecovery();
+            }
             throw;
         }
-        finally { gate.Release(); }
+        finally
+        {
+            gate.Release();
+            if (!ct.IsCancellationRequested && Result != null && !disposed) StartRecovery(hostId);
+        }
+    }
+
+    private void StartRecovery(string hostId)
+    {
+        activeHostId = hostId;
+        if (recoveryCancellation != null) return;
+        recoveryCancellation = new();
+        NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
+        recovery = RecoverNetworkAsync(recoveryCancellation.Token);
+    }
+    private void OnNetworkAddressChanged(object? sender, EventArgs e) => NotifyNetworkChanged();
+    internal void NotifyNetworkChanged()
+    {
+        refreshRequested = true;
+        WakeRecovery();
+    }
+    private void WakeRecovery()
+    {
+        try { if (networkChanged.CurrentCount == 0) networkChanged.Release(); } catch (SemaphoreFullException) { }
+    }
+    private async Task RecoverNetworkAsync(CancellationToken ct)
+    {
+        var failures = 0;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var wait = Result?.PublicAddress != null ? TimeSpan.FromMinutes(5)
+                    : TimeSpan.FromMilliseconds(Math.Min(recoveryDelay.TotalMilliseconds * Math.Pow(2, Math.Min(failures, 6)), TimeSpan.FromMinutes(5).TotalMilliseconds));
+                var signalled = await networkChanged.WaitAsync(wait, ct).ConfigureAwait(false);
+                // A lost renewal wakes a long healthy wait, then retries with the same backoff
+                // as an unavailable network. Address-change notifications can retry immediately.
+                if (signalled && !refreshRequested && Result?.PublicAddress == null)
+                    await Task.Delay(recoveryDelay, ct).ConfigureAwait(false);
+                if (!refreshRequested && Result?.PublicAddress != null) continue;
+                refreshRequested = false;
+                try
+                {
+                    await PrepareAsync(activeHostId, false, ct).ConfigureAwait(false);
+                    failures = Result?.PublicAddress == null ? failures + 1 : 0;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (Exception error) when (error is IOException or HttpRequestException or SocketException or InvalidOperationException or OperationCanceledException)
+                { failures++; }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
     }
 
     private static string SafeOwner(string value) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..20];
@@ -134,16 +212,22 @@ public sealed class HostNetworkSetup : IDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch
         {
-            if (Result is { } result) Result = result with { PublicAddress = null, RouterMapped = false,
-                Status = "The router stopped automatic Internet sharing. Your local host is still running. Retry sharing." };
+            if (Result is { } result) SetResult(result with { PublicAddress = null, RouterMapped = false,
+                Status = "The router connection was interrupted. Hosting is still running and Hearth will retry automatically." });
             try { await active.DisposeAsync().ConfigureAwait(false); } catch { }
+            WakeRecovery();
         }
     }
 
     public async Task StopAsync()
     {
+        var monitor = recovery; var cancel = recoveryCancellation;
+        NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
+        cancel?.Cancel();
+        if (monitor != null) { try { await monitor.ConfigureAwait(false); } catch (OperationCanceledException) { } }
+        recovery = null; recoveryCancellation = null; cancel?.Dispose();
         await gate.WaitAsync().ConfigureAwait(false);
-        try { await StopLeaseAsync().ConfigureAwait(false); Result = null; }
+        try { await StopLeaseAsync().ConfigureAwait(false); Result = null; ResultChanged?.Invoke(this, EventArgs.Empty); }
         finally { gate.Release(); }
     }
     private async Task StopLeaseAsync()
@@ -231,7 +315,7 @@ public sealed class WindowsHostNetworkPlatform : IHostNetworkPlatform
         Process process;
         try { process = Process.Start(start) ?? throw new IOException("Windows could not start the hosting permission helper."); }
         catch (Win32Exception error) when (error.NativeErrorCode == 1223)
-        { throw new OperationCanceledException("Windows permission was canceled. Hosting was not enabled.", error, ct); }
+        { throw new OperationCanceledException("Windows permission was canceled. Your previous hosting state was kept.", error, ct); }
         using (process)
         {
             // Once launched, let the narrowly scoped elevation finish; do not leave a detached rule writer.
@@ -388,10 +472,10 @@ internal sealed class NatPmpLease(HostNetworkRoute route, int localPort, IPAddre
 }
 
 internal sealed class UpnpLease(HostNetworkRoute route, int port, string owner, Uri control, string service, IPAddress external,
-    Func<string, KeyValuePair<string, string>[], CancellationToken, Task<XDocument>>? soap = null) : IHostPortLease
+    Func<string, KeyValuePair<string, string>[], CancellationToken, Task<XDocument>>? soap = null, int? mappedPort = null) : IHostPortLease
 {
     public IPAddress ExternalAddress { get; } = external;
-    public int ExternalPort => port;
+    public int ExternalPort => mappedPort ?? port;
     public TimeSpan Lifetime { get; private set; } = TimeSpan.FromMinutes(30);
     private bool owned;
     public static async Task<IHostPortLease?> TryCreateAsync(HostNetworkRoute route, int port, string owner, CancellationToken ct)
@@ -412,10 +496,26 @@ internal sealed class UpnpLease(HostNetworkRoute route, int port, string owner, 
                 var raw = response.Descendants().FirstOrDefault(e => e.Name.LocalName == "NewExternalIPAddress")?.Value;
                 if (!IPAddress.TryParse(raw, out var external)) continue;
                 if (!HostNetworkSetup.IsPublicIPv4(external)) throw new HostNetworkException("Your router has a private Internet address. Another router or your Internet provider prevents direct Internet sharing.");
-                candidate = new(route, port, owner, control, service, external);
-                try { if (await candidate.RenewAsync(ct).ConfigureAwait(false)) return candidate; }
-                catch { await candidate.DisposeAsync().ConfigureAwait(false); throw; }
+                var mapped = await TryMapCandidatesAsync(route, port, owner, control, service, external, ct).ConfigureAwait(false);
+                if (mapped != null) return mapped;
             }
+        }
+        return null;
+    }
+    internal static IEnumerable<int> CandidatePorts(int port) => Enumerable.Range(port, Math.Min(10, 65536 - port));
+    internal static async Task<IHostPortLease?> TryMapCandidatesAsync(HostNetworkRoute route, int port, string owner,
+        Uri control, string service, IPAddress external, CancellationToken ct,
+        Func<string, KeyValuePair<string, string>[], CancellationToken, Task<XDocument>>? soap = null)
+    {
+        // Separate PCs behind one router can share the same internal port.
+        // Never overwrite a foreign mapping: try a small external-port range instead.
+        foreach (var outsidePort in CandidatePorts(port))
+        {
+            ct.ThrowIfCancellationRequested();
+            var candidate = new UpnpLease(route, port, owner, control, service, external, soap, outsidePort);
+            try { if (await candidate.RenewAsync(ct).ConfigureAwait(false)) return candidate; }
+            catch { await candidate.DisposeAsync().ConfigureAwait(false); throw; }
+            await candidate.DisposeAsync().ConfigureAwait(false);
         }
         return null;
     }
@@ -454,7 +554,7 @@ internal sealed class UpnpLease(HostNetworkRoute route, int port, string owner, 
     }
     private bool Matches(XDocument doc) => Value(doc, "NewInternalClient") == route.LocalAddress.ToString()
         && Value(doc, "NewInternalPort") == port.ToString() && Value(doc, "NewPortMappingDescription") == owner;
-    private KeyValuePair<string, string>[] Identity() => [Pair("NewRemoteHost", ""), Pair("NewExternalPort", port.ToString()), Pair("NewProtocol", "TCP")];
+    private KeyValuePair<string, string>[] Identity() => [Pair("NewRemoteHost", ""), Pair("NewExternalPort", ExternalPort.ToString()), Pair("NewProtocol", "TCP")];
     private static KeyValuePair<string, string> Pair(string name, string value) => new(name, value);
     private static string? Value(XDocument doc, string name) => doc.Descendants().FirstOrDefault(e => e.Name.LocalName == name)?.Value;
     private async Task<XDocument> Soap(string action, KeyValuePair<string, string>[] values, CancellationToken ct)

@@ -26,33 +26,35 @@ public partial class MainWindow : Window
     private TextBlock? draftSummary;
     private string selectedGroup = "base";
     private bool busy;
+    private bool navigationDuringOperation;
     private bool exitRequested;
     private TaskCompletionSource? operationFinished;
     public MainWindow(ProfileStore profile)
     {
         InitializeComponent(); store = profile; sync = new(store.Root, store.State.InstanceDirectory); prism = new(store.Root, store.State.InstanceDirectory);
-        ProfileLabel.Text = store.State.DisplayName.ToUpperInvariant(); VersionLabel.Text = "HEARTH  " + AppInfo.Version;
+        VersionLabel.Text = "HEARTH  " + AppInfo.Version;
         BrandIcon.Content = PackArtwork.Create(0, 30);
         LibraryNav.Content = IconLabel("My modpacks", "M2,2 L8,2 8,8 2,8 Z M12,2 L18,2 18,8 12,8 Z M2,12 L8,12 8,18 2,18 Z M12,12 L18,12 18,18 12,18 Z");
         AddPackNav.Content = IconLabel("Add modpack", "M10,2 L10,18 M2,10 L18,10");
-        PublishNav.Content = IconLabel("Manage modpacks", "M2,6 L10,2 18,6 10,10 Z M2,10 L10,14 18,10 M2,14 L10,18 18,14");
-        HostsNav.Content = IconLabel("Hosting", "M2,2 L18,2 18,8 2,8 Z M2,12 L18,12 18,18 2,18 Z M5,5 L6,5 M5,15 L6,15 M12,5 L15,5 M12,15 L15,15");
+        PublishNav.Content = IconLabel("Share packs", "M2,6 L10,2 18,6 10,10 Z M2,10 L10,14 18,10 M2,14 L10,18 18,14");
         SettingsNav.Content = IconLabel("Settings", "M2,4 L18,4 M2,10 L18,10 M2,16 L18,16 M6,1 L6,7 M14,7 L14,13 M7,13 L7,19");
         PackOptionsButton.Content = new System.Windows.Shapes.Path { Data = Geometry.Parse("M1,4 A1.5,1.5 0 1 0 4,4 A1.5,1.5 0 1 0 1,4 M8,4 A1.5,1.5 0 1 0 11,4 A1.5,1.5 0 1 0 8,4 M15,4 A1.5,1.5 0 1 0 18,4 A1.5,1.5 0 1 0 15,4"), Fill = Color("#CED8CE"), VerticalAlignment = VerticalAlignment.Center };
         SourceInitialized += (_, _) => { var dark = 1; _ = DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 20, ref dark, sizeof(int)); };
         try { HeroImage.Source = new BitmapImage(new Uri("pack://application:,,,/Hearth.App;component/Assets/pack-landscape.png")); } catch (IOException) { }
         TerrainOff.Checked += Terrain_Checked; TerrainVoxy.Checked += Terrain_Checked; TerrainDh.Checked += Terrain_Checked;
         ShowLibrary();
+        InitializeOwnerRefresh(); InitializeLibraryRefresh();
         Closing += (_, e) =>
         {
             var app = Application.Current as App;
+            if (app?.LocalHost?.IsRunning == true && !store.State.CloseToTray && !app.IsExiting) return;
             if (busy && app?.IsExiting != true && !(store.State.CloseToTray && app?.TrayAvailable == true))
             {
                 e.Cancel = true;
                 Dispatcher.BeginInvoke(new Action(RequestQuit));
             }
         };
-        Closed += (_, _) => { packStatusCancellation?.Cancel(); packStatusCancellation?.Dispose(); ownerListRequest?.Cancel(); ownerListRequest?.Dispose(); hostingStatusTimer?.Stop(); };
+        Closed += (_, _) => { packStatusCancellation?.Cancel(); packStatusCancellation?.Dispose(); hostingStatusTimer?.Stop(); StopOwnerRefresh(); libraryRefreshTimer?.Stop(); };
     }
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
@@ -86,21 +88,20 @@ public partial class MainWindow : Window
     private void PageStart(string key, string title, string eyebrow)
     {
         hostingStatusTimer?.Stop(); hostingStatusTimer = null;
-        packStatusCancellation?.Cancel(); activePage = key; PageTitle.Text = title; PageEyebrow.Text = eyebrow; Page.Children.Clear(); PageActions.Children.Clear();
+        packStatusCancellation?.Cancel(); activePage = key; PageTitle.Text = title; Page.Children.Clear(); PageActions.Children.Clear();
         LibraryView.Visibility = key == "library" ? Visibility.Visible : Visibility.Collapsed;
         PageHeader.Visibility = PageScroller.Visibility = key == "library" ? Visibility.Collapsed : Visibility.Visible;
         LibraryNav.Background = Color(key == "library" ? "#30383A" : "#262D2F");
-        PublishNav.Background = Color(key == "publish" ? "#3C542D" : "#1B2022");
-        HostsNav.Background = Color(key == "hosts" ? "#3C542D" : "#1B2022");
+        PublishNav.Background = Color(key is "publish" or "hosts" ? "#3C542D" : "#1B2022");
         AddPackNav.Background = Color(key == "join" ? "#3C542D" : "#252B2D");
         SettingsNav.Background = Color(key == "settings" ? "#30383A" : "#1B2022");
         RefreshSidebar();
         PageScroller.ScrollToTop();
     }
     private void Status(string text) { StatusText.Text = text; StatusText.ToolTip = text; }
-    private async Task Run(string label, Func<CancellationToken, Task> work)
+    private async Task Run(string label, Func<CancellationToken, Task> work, bool allowNavigation = false)
     {
-        if (busy || exitRequested) return; busy = true; operation = new(); operationFinished = new(TaskCreationOptions.RunContinuationsAsynchronously); MainContent.IsEnabled = SidebarPanel.IsEnabled = false;
+        if (busy || exitRequested) return; busy = true; operation = new(); operationFinished = new(TaskCreationOptions.RunContinuationsAsynchronously); navigationDuringOperation = allowNavigation; MainContent.IsEnabled = allowNavigation; SidebarPanel.IsEnabled = allowNavigation; Page.IsEnabled = PackOptionsButton.IsEnabled = false; PlayButton.IsEnabled = TerrainSelector.IsEnabled = false;
         Progress.Visibility = CancelButton.Visibility = Visibility.Visible; Status(label);
         try { await work(operation.Token); }
         catch (OperationCanceledException) { if (!exitRequested) Status("Canceled. You can try again."); }
@@ -108,16 +109,17 @@ public partial class MainWindow : Window
         {
             if (!exitRequested)
             {
-                Status(ex.Message);
+                AppDiagnostics.Log(ex); Status(ex.Message);
                 MessageBox.Show(this, ex.Message, "Hearth", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
         finally
         {
-            busy = false; operation.Dispose(); operation = null; MainContent.IsEnabled = SidebarPanel.IsEnabled = true;
+            busy = false; navigationDuringOperation = false; operation.Dispose(); operation = null; MainContent.IsEnabled = SidebarPanel.IsEnabled = Page.IsEnabled = PackOptionsButton.IsEnabled = true;
             Progress.Visibility = CancelButton.Visibility = Visibility.Collapsed;
             operationFinished.TrySetResult(); operationFinished = null;
             if (inviteQueued && !exitRequested) { inviteQueued = false; ShowIncomingLink(); }
+            else if (!exitRequested && activePage == "library") ShowLibrary();
         }
     }
     public async void RequestQuit()
@@ -133,11 +135,9 @@ public partial class MainWindow : Window
     }
     private void Library_Click(object sender, RoutedEventArgs e) => ShowLibrary();
     private void AddPack_Click(object sender, RoutedEventArgs e) => ShowAddPack();
-    private void Publish_Click(object sender, RoutedEventArgs e) => ShowPublishing();
-    private void Hosts_Click(object sender, RoutedEventArgs e) => ShowHosts();
+    private void Publish_Click(object sender, RoutedEventArgs e) => ShowHosts();
     private void Settings_Click(object sender, RoutedEventArgs e) => ShowSettings();
     private void Cancel_Click(object sender, RoutedEventArgs e) => operation?.Cancel();
-    private void SetupPrism_Click(object sender, RoutedEventArgs e) => _ = InstallPrism();
     public void OpenInvite(string value)
     {
         pendingInvite = value;
@@ -156,12 +156,13 @@ public partial class MainWindow : Window
     private string PrismExe() => AvailablePrismExe() ?? throw new InvalidOperationException("Set up Prism using the button below the pack or in Settings.");
     private async Task Play(JoinedPack original) => await Run("Checking this pack's latest release…", async ct =>
     {
-        packStatusCancellation?.Cancel(); var exe = PrismExe(); var pack = store.State.Packs.First(p => p.PackId == original.PackId && p.HostUrl == original.HostUrl);
-        using var api = new HearthApi(pack.HostUrl, pack.Token, certificatePin: pack.CertificatePin);
+        packStatusCancellation?.Cancel(); var operationSync = sync; var operationPrism = prism; var exe = PrismExe(); var pack = store.State.Packs.First(p => p.PackId == original.PackId && p.HostUrl == original.HostUrl);
+        EnsureLocalHostAvailable(pack);
+        using var api = new HearthApi(pack.HostUrl, pack.Token, certificatePin: pack.CertificatePin, hostName: pack.Name);
         try
         {
-            var result = await sync.SyncAsync(api, pack, new Progress<SyncProgress>(p => { Status(p.Message); if (activePage == "library" && IsSelected(pack)) SetPackStatus(p.Message, "#D6BE70"); }), ct);
-            ct.ThrowIfCancellationRequested(); prism.Launch(exe, result.InstanceId); Status("Pack ready. Continue in Prism to start Minecraft."); ShowLibrary();
+            var result = await operationSync.SyncAsync(api, pack, new Progress<SyncProgress>(p => { Status(p.Message); if (activePage == "library" && IsSelected(pack)) SetPackStatus(p.Message, "#D6BE70"); }), ct);
+            ct.ThrowIfCancellationRequested(); await Task.Run(() => operationPrism.Launch(exe, result.InstanceId), ct); Status("Pack ready. Continue in Prism to start Minecraft."); if (activePage == "library") ShowLibrary();
         }
         catch (HostApiException ex) when (ex.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.NotFound)
         {
@@ -169,11 +170,11 @@ public partial class MainWindow : Window
             await RefreshSelectedStatus(); Status("Pack access or its release has changed. Follow the next step shown above.");
         }
         catch { if (!ct.IsCancellationRequested && !exitRequested) _ = RefreshSelectedStatus(); throw; }
-    });
+    }, allowNavigation: true);
     private async Task InstallPrism() => await Run("Downloading Prism from its official release…", async ct =>
     {
         store.State.PrismExecutable = await prism.InstallAsync(new Progress<SyncProgress>(p => Status(p.Message)), ct); store.Save();
-        ct.ThrowIfCancellationRequested(); prism.Open(store.State.PrismExecutable);
+        ct.ThrowIfCancellationRequested(); await Task.Run(() => prism.Open(store.State.PrismExecutable), ct);
         if (activePage == "library") ShowLibrary();
         else if (activePage == "settings") ShowSettings();
         Status("In Prism, finish setup and sign in through Settings → Accounts → Add Microsoft. Then close Prism, return here, and press Play.");

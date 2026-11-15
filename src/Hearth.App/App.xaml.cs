@@ -17,6 +17,25 @@ public partial class App : Application
     public bool TrayAvailable => tray != null;
     public AppLocalHost? LocalHost { get; private set; }
     public string HostingError { get; private set; } = "";
+    public App()
+    {
+        DispatcherUnhandledException += (_, args) =>
+        {
+            AppDiagnostics.Log(args.Exception);
+            if (args.Exception is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException or ArgumentException)
+            {
+                args.Handled = true;
+                (MainWindow as MainWindow)?.ReportRecoverableError(args.Exception);
+            }
+            else
+            {
+                MessageBox.Show("Hearth encountered an unexpected error and needs to restart. Your saved files are kept. Details: " + AppDiagnostics.LogPath, "Hearth", MessageBoxButton.OK, MessageBoxImage.Error);
+                args.Handled = true; ExitApplication();
+            }
+        };
+        TaskScheduler.UnobservedTaskException += (_, args) => { AppDiagnostics.Log(args.Exception); args.SetObserved(); };
+        AppDomain.CurrentDomain.UnhandledException += (_, args) => { if (args.ExceptionObject is Exception error) AppDiagnostics.Log(error); };
+    }
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -26,6 +45,7 @@ public partial class App : Application
             var index = Array.IndexOf(e.Args, "--profile");
             var root = index >= 0 && index + 1 < e.Args.Length ? e.Args[index + 1] : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Hearth");
             root = Path.GetFullPath(root);
+            AppDiagnostics.Configure(root);
             var pipe = "Hearth-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(root.ToLowerInvariant())))[..20];
             singleInstance = new Mutex(true, "Local\\" + pipe, out var first);
             var invite = e.Args.FirstOrDefault(a => a.StartsWith("hearth://", StringComparison.OrdinalIgnoreCase));
@@ -54,6 +74,12 @@ public partial class App : Application
             var window = new MainWindow(profile); MainWindow = window;
             window.Closing += (_, args) =>
             {
+                if (!args.Cancel && !IsExiting && !profile.State.CloseToTray && LocalHost?.IsRunning == true)
+                {
+                    args.Cancel = true;
+                    window.ConfirmHostingClose();
+                    return;
+                }
                 if (!args.Cancel && !IsExiting && profile.State.CloseToTray && tray != null)
                 {
                     args.Cancel = true;
@@ -70,6 +96,7 @@ public partial class App : Application
             }
             if (!startup || invite != null || !TrayAvailable) window.Show();
             if (invite != null) window.OpenInvite(invite);
+            if (profile.RecoveryNotice is { } notice) MessageBox.Show(window, notice, "Profile recovered", MessageBoxButton.OK, MessageBoxImage.Information);
             _ = ListenAsync(pipe, window);
             if (hostingSetupError != null) window.ShowHostingStartupIssue(hostingSetupError);
             else if (profile.State.LocalHostingEnabled) window.StartConfiguredHosting();
@@ -79,9 +106,10 @@ public partial class App : Application
     protected virtual AppLocalHost CreateLocalHost(ProfileStore store) => new(store.Root,
         port: store.State.LocalHostingPort,
         dataDirectory: string.IsNullOrWhiteSpace(store.State.LocalHostDataDirectory) ? null : store.State.LocalHostDataDirectory,
-        httpsPort: store.State.LocalHostingPort == 65535 ? 17843 : store.State.LocalHostingPort + 1);
+        httpsPort: store.State.LocalHostingPort == 65535 ? 17843 : store.State.LocalHostingPort + 1,
+        advertisedAddress: store.State.LocalHostAdvertisedAddress);
 
-    public async Task<HostConnection> EnableHostingAsync(CancellationToken cancellationToken = default, bool interactive = true)
+    public async Task<HostConnection> EnableHostingAsync(CancellationToken cancellationToken = default, bool interactive = true, string? recoveryKey = null)
     {
         if (hostingSetupError != null) throw new InvalidOperationException(hostingSetupError);
         if (profile == null || LocalHost == null || IsExiting) throw new InvalidOperationException("Hearth is closing.");
@@ -91,7 +119,7 @@ public partial class App : Application
             if (LegacyHostingMigration.ServiceInstalled())
                 throw new InvalidOperationException("An older Hearth Windows service is installed. Run the latest Hearth installer to migrate it before enabling hosting.");
             return await LocalHostingSetup.EnableAsync(profile, LocalHost.HostUrl, LocalHost.DataDirectory,
-                (key, ct) => LocalHost.StartAsync(key, interactive, ct), cancellationToken, () => LocalHost.HostId);
+                (key, ct) => LocalHost.StartAsync(key, interactive, ct), cancellationToken, () => LocalHost.HostId, recoveryKey: recoveryKey);
         }
         catch (Exception exception)
         {
@@ -104,8 +132,8 @@ public partial class App : Application
     public async Task RetryHostNetworkAsync(CancellationToken cancellationToken = default)
     {
         if (LocalHost == null || profile == null || IsExiting) throw new InvalidOperationException("Hearth is closing.");
-        await LocalHost.StopAsync();
-        await EnableHostingAsync(cancellationToken);
+        try { await LocalHost.RetryNetworkAsync(profile.State.LocalHostOwnerToken, cancellationToken); HostingError = ""; }
+        catch (Exception ex) { HostingError = ex is OperationCanceledException ? "Connection setup was canceled. Existing hosting was kept." : ex.Message; throw; }
     }
 
     public async Task DisableHostingAsync()
@@ -150,6 +178,13 @@ public partial class App : Application
             tray.Dispose();
             tray = null;
         }
+    }
+
+    public void KeepHostingInTray()
+    {
+        if (MainWindow is not MainWindow window) return;
+        tray ??= new TrayController(window, window.RequestQuit);
+        tray.HideWindow();
     }
 
     public void ExitApplication()

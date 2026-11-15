@@ -94,6 +94,7 @@ internal static class HostNetworkChecks
         check(HostNetworkSetup.IsPublicIPv4(IPAddress.Parse("8.8.8.8")) && HostNetworkSetup.IsPublicIPv4(IPAddress.Parse("100.128.0.1")),
             "Public IPv4 classification retains valid addresses bordering the carrier-grade NAT range");
         await CheckMappingProtocols(check);
+        await NetworkRecoveryChecks.RunAsync(check);
     }
 
     private static void CheckFirewallScope(Action<bool, string> check)

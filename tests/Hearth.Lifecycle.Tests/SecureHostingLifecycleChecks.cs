@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net;
+using System.Text.Json;
 using Hearth.App;
 using Hearth.Core;
 
@@ -42,11 +43,31 @@ internal static class SecureHostingLifecycleChecks
             check(host.Network?.Result is { FirewallReady: true, RouterMapped: true, InternetReachabilityVerified: false }
                 && platform.MapCalls == 1, "Secure host startup advertises its configured route without claiming an external connection was verified");
             var process = host.ProcessId;
+            var mapping = platform.LastLease;
+            platform.CancelPermission = true;
+            try { await host.RetryNetworkAsync(connection.OwnerToken); throw new InvalidOperationException("Canceled repair was accepted"); }
+            catch (OperationCanceledException) { }
+            check(host.IsRunning && host.ProcessId == process && mapping?.Disposed == false
+                && (await api.ListPacksAsync()).Single().Id == packId && platform.MapCalls == 1,
+                "Canceling the Windows permission step during repair preserves the running HTTPS host, its packs, and its router lease");
+            platform.CancelPermission = false;
+            host.SetAdvertisedAddress($"https://localhost:{httpsPort}");
+            using var dnsApi = new HearthApi(host.InternetAddress!, connection.OwnerToken, certificatePin: pin);
+            var advertised = await dnsApi.EndpointsAsync();
+            check((await dnsApi.HealthAsync()).HostId == identity && (await dnsApi.ListPacksAsync()).Single().Id == packId,
+                "A DNS address connects using the existing certificate pin without changing the self-signed host certificate");
+            check(advertised.HostId == identity && advertised.CertificatePin == pin
+                && advertised.InternetAddress == $"https://localhost:{httpsPort}"
+                && advertised.HomeNetworkAddresses.Single() == $"https://192.168.1.42:{httpsPort}",
+                "Remote administrators receive the owner's configured Internet and home-network endpoints with host identity and certificate pin");
             host.Dispose();
             await OwnedHostChecks.AssertStoppedAsync(host.HostUrl, process);
             await OwnedHostChecks.AssertStoppedAsync($"https://127.0.0.1:{httpsPort}", process);
             check(platform.LastLease?.Disposed == true && !host.IsRunning,
                 "Fully disposing the launcher-owned secure host stops both listeners and releases its router lease");
+            var stoppedEndpoints = JsonSerializer.Deserialize<HostEndpoints>(File.ReadAllText(Path.Combine(host.DataDirectory, "advertised-endpoints.json")), JsonDefaults.Options)!;
+            check(stoppedEndpoints.InternetAddress == null && stoppedEndpoints.HomeNetworkAddresses.Count == 0,
+                "Stopping the host withdraws its saved advertised endpoints instead of leaving links marked active");
         }
 
         platform.FirewallAllowed = false;
@@ -68,6 +89,35 @@ internal static class SecureHostingLifecycleChecks
             check(resumed.Network?.Result is null && !await OwnedHostChecks.PortOpenAsync(httpsPort),
                 "Stopping after automatic startup clears sharing status and leaves both host ports closed");
         }
+
+        var recoveryRoot = Path.Combine(root, "recovery-profile");
+        var recovery = new ProfileStore(recoveryRoot);
+        recovery.Save();
+        using var recovered = new AppLocalHost(recoveryRoot, OwnedHostChecks.HostExecutable, httpPort, Path.Combine(root, "Host"));
+        var incorrect = OwnedHostChecks.NewOwnerToken();
+        var rejected = false;
+        try
+        {
+            await LocalHostingSetup.EnableAsync(recovery, recovered.HostUrl, recovered.DataDirectory, recovered.StartAsync, recoveryKey: incorrect);
+        }
+        catch (InvalidOperationException error) when (error.Message.Contains("doesn't match this host's data", StringComparison.Ordinal)) { rejected = true; }
+        var rejectedState = new ProfileStore(recoveryRoot).State;
+        check(rejected && rejectedState.LocalHostOwnerToken == "" && !rejectedState.LocalHostingEnabled
+            && rejectedState.Hosts.Count == 0 && !recovered.IsRunning,
+            "A real 403 for a pasted recovery key keeps the previous profile unchanged, hosting disabled, and recovery available");
+        recovery.State.LocalHostOwnerToken = incorrect; recovery.Save();
+        var original = profile.State.LocalHostOwnerToken;
+        var replacement = await LocalHostingSetup.EnableAsync(recovery, recovered.HostUrl, recovered.DataDirectory,
+            async (candidate, ct) =>
+            {
+                check(new ProfileStore(recoveryRoot).State.LocalHostOwnerToken == incorrect,
+                    "An already-saved wrong key is not overwritten until the replacement passes real owner authentication");
+                await recovered.StartAsync(candidate, ct);
+            }, verifiedHostId: () => recovered.HostId, recoveryKey: original);
+        using var recoveredApi = new HearthApi(recovered.HostUrl, replacement.OwnerToken);
+        check(new ProfileStore(recoveryRoot).State.LocalHostOwnerToken == original && recovered.IsRunning
+            && replacement.HostId == identity && (await recoveredApi.ListPacksAsync()).Single().Id == packId,
+            "Replacing an already-saved wrong owner key recovers the original packs and saves only the verified key");
     }
 
     private sealed class NetworkFixture : IHostNetworkPlatform

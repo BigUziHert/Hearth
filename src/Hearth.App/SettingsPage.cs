@@ -26,7 +26,7 @@ public partial class MainWindow
                 store.State.CloseToTray = closeToTray.IsChecked == true;
                 (Application.Current as App)?.ApplyTraySettings();
                 store.Save();
-                Status(store.State.CloseToTray ? "Closing the window will keep Hearth in the system tray." : "Closing the window will quit Hearth.");
+                Status(store.State.CloseToTray ? "Closing the window will keep Hearth in the system tray." : "Closing will ask whether to keep hosting in the tray when hosting is running. Otherwise, Hearth will quit.");
             }
             catch (Exception exception)
             {
@@ -141,7 +141,7 @@ public partial class MainWindow
         var minecraft = Card("Minecraft", AvailablePrismExe() == null ? "Set up Prism to launch your packs." : "Prism is ready to launch your packs.");
         minecraft.Children.Add(Text("Sign in with your own Microsoft account in Prism → Settings → Accounts. Close Prism before returning here to press Play.", 13, false, "#A4AFAA"));
         if (AvailablePrismExe() == null) minecraft.Children.Add(Row(Button("Set up Prism", () => _ = InstallPrism())));
-        else minecraft.Children.Add(Row(Button("Open Prism", () => _ = Run("Opening Prism…", _ => { prism.Open(PrismExe()); Status("Manage your Minecraft account in Prism → Settings → Accounts."); return Task.CompletedTask; }), true)));
+        else minecraft.Children.Add(Row(Button("Open Prism", () => _ = Run("Opening Prism…", async ct => { var executable = PrismExe(); await Task.Run(() => prism.Open(executable), ct); Status("Manage your Minecraft account in Prism → Settings → Accounts."); }), true)));
         minecraft.Children.Add(Row(Button("Choose existing Prism…", () =>
         {
             var dialog = new OpenFileDialog { Filter = "Prism Launcher|prismlauncher.exe" };
@@ -161,8 +161,9 @@ public partial class MainWindow
         profile.Children.Add(Row(Button("Save name", () =>
         {
             if (string.IsNullOrWhiteSpace(displayName.Text) || displayName.Text.Trim().Length > 80) { Status("Enter the name your friends know you by, using 1–80 characters."); displayName.Focus(); return; }
-            store.State.DisplayName = displayName.Text.Trim(); store.Save(); ProfileLabel.Text = store.State.DisplayName.ToUpperInvariant();
-            Status("Name saved. New access requests will use this name.");
+            var previousName = store.State.DisplayName;
+            try { store.State.DisplayName = displayName.Text.Trim(); store.Save(); Status("Name saved. New access requests will use this name."); }
+            catch (Exception error) { store.State.DisplayName = previousName; ReportRecoverableError(error); }
         }, true)));
 
         var help = Card("Help");

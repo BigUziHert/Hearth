@@ -22,9 +22,12 @@ public sealed class AppLocalHost : IDisposable
     private bool ready;
     private bool disposed;
     private string? lastError;
+    private bool httpsActive;
+    private string advertisedAddress;
+    public event EventHandler? StateChanged;
 
     public AppLocalHost(string profileRoot, string? executablePath = null, int port = 17842, string? dataDirectory = null,
-        int? httpsPort = null, IHostNetworkPlatform? networkPlatform = null)
+        int? httpsPort = null, IHostNetworkPlatform? networkPlatform = null, string? advertisedAddress = null)
     {
         if (port is < 1024 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         this.profileRoot = Path.GetFullPath(profileRoot);
@@ -32,15 +35,24 @@ public sealed class AppLocalHost : IDisposable
         this.port = port;
         if (httpsPort is < 1024 or > 65535 || httpsPort == port) throw new ArgumentOutOfRangeException(nameof(httpsPort));
         this.httpsPort = httpsPort;
+        this.advertisedAddress = string.IsNullOrWhiteSpace(advertisedAddress) ? "" : NormalizeAdvertisedAddress(advertisedAddress);
         DataDirectory = Path.GetFullPath(string.IsNullOrWhiteSpace(dataDirectory) ? Path.Combine(this.profileRoot, "Host") : dataDirectory);
         HostUrl = $"http://127.0.0.1:{port}";
-        if (httpsPort.HasValue) Network = new HostNetworkSetup(this.profileRoot, this.executablePath, httpsPort.Value, networkPlatform);
+        if (httpsPort.HasValue)
+        {
+            Network = new HostNetworkSetup(this.profileRoot, this.executablePath, httpsPort.Value, networkPlatform);
+            Network.ResultChanged += (_, _) => PublishEndpoints();
+        }
     }
 
     public string DataDirectory { get; }
     public string HostUrl { get; }
     public string? HostId { get; private set; }
     public string? CertificatePin { get; private set; }
+    public string? AdvertisedAddress => string.IsNullOrEmpty(advertisedAddress) ? null : advertisedAddress;
+    public bool IsSharing => IsRunning && httpsActive && Network?.Result?.FirewallReady == true;
+    public string? InternetAddress => IsSharing
+        ? AdvertisedAddress ?? Network?.Result?.PublicAddress : null;
     public HostNetworkSetup? Network { get; }
     public bool IsRunning { get { lock (stateLock) return ready && child?.IsRunning == true; } }
     public int? ProcessId { get { lock (stateLock) return child?.IsRunning == true ? child.Id : null; } }
@@ -113,7 +125,9 @@ public sealed class AppLocalHost : IDisposable
                     ObjectDisposedException.ThrowIf(disposed, this);
                     if (child != running || !running.IsRunning) throw new IOException("The local host stopped during startup. Try enabling hosting again.");
                     ready = true;
+                    httpsActive = arguments.Contains("--https-port");
                 }
+                PublishEndpoints();
             }
             catch (Exception exception)
             {
@@ -129,6 +143,69 @@ public sealed class AppLocalHost : IDisposable
             }
         }
         finally { operation.Release(); }
+    }
+
+    public static string NormalizeAdvertisedAddress(string value)
+    {
+        var input = value.Trim();
+        if (!input.Contains("://", StringComparison.Ordinal)) input = "https://" + input;
+        var normalized = HearthApi.NormalizeHost(input);
+        if (!normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Use an HTTPS address, including its port, such as https://packs.example.com:17843.");
+        return normalized;
+    }
+    public void SetAdvertisedAddress(string? address)
+    {
+        advertisedAddress = string.IsNullOrWhiteSpace(address) ? "" : NormalizeAdvertisedAddress(address);
+        PublishEndpoints();
+    }
+    private void PublishEndpoints()
+    {
+        if (string.IsNullOrEmpty(HostId) || !Directory.Exists(DataDirectory)) return;
+        try
+        {
+            var active = IsRunning && httpsActive && Network?.Result?.FirewallReady == true;
+            var value = new HostEndpoints(HostId, CertificatePin, active ? InternetAddress : null,
+                active ? Network!.Result!.LocalAddresses.ToList() : [], DateTimeOffset.UtcNow);
+            var path = Path.Combine(DataDirectory, "advertised-endpoints.json");
+            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+                {
+                    JsonSerializer.Serialize(output, value, JsonDefaults.Options); output.Flush(true);
+                }
+                File.Move(temporary, path, true);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { lock (stateLock) lastError = "Hosting is running, but its shared addresses could not be saved. Check the host data folder's permissions."; }
+        StateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public async Task RetryNetworkAsync(string ownerToken, CancellationToken ct = default)
+    {
+        if (!IsRunning) throw new InvalidOperationException("Hosting is off on this PC. Choose Enable hosting first.");
+        if (Network == null) return;
+        // Windows permission is the only interactive part. Cancellation here cannot stop the host.
+        if (!await Network.EnsureFirewallAsync(true, ct).ConfigureAwait(false))
+            throw new IOException("Windows did not allow incoming Hearth connections. Hosting is still running; retry connection setup when ready.");
+        ct.ThrowIfCancellationRequested();
+        if (httpsActive)
+        {
+            await Network.PrepareAsync(HostId!, false, ct).ConfigureAwait(false);
+            PublishEndpoints(); return;
+        }
+        await StopAsync().ConfigureAwait(false);
+        try { await StartAsync(ownerToken, false, ct).ConfigureAwait(false); }
+        catch
+        {
+            // A running loopback-only host must remain usable if the secure restart is interrupted.
+            if (!disposed && !lifetime.IsCancellationRequested)
+                try { await StartAsync(ownerToken, false, CancellationToken.None).ConfigureAwait(false); } catch { }
+            throw;
+        }
     }
 
     private async Task InitializeAsync(string ownerToken, CancellationToken cancellationToken)
@@ -164,6 +241,7 @@ public sealed class AppLocalHost : IDisposable
             ObjectDisposedException.ThrowIf(disposed, this);
             child = OwnedHostProcess.Start(executablePath, arguments);
             ready = false;
+            httpsActive = false;
             return child;
         }
     }
@@ -198,6 +276,7 @@ public sealed class AppLocalHost : IDisposable
             var previous = DetachChild();
             if (previous is not null) await previous.StopAsync().ConfigureAwait(false);
             if (Network != null) await Network.StopAsync().ConfigureAwait(false);
+            PublishEndpoints();
         }
         finally { operation.Release(); }
     }
@@ -216,6 +295,7 @@ public sealed class AppLocalHost : IDisposable
         lifetime.Cancel();
         previous?.Dispose();
         Network?.Dispose();
+        PublishEndpoints();
     }
 
     private sealed record HostIdentity(string HostId);

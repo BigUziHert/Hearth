@@ -48,6 +48,8 @@ internal static class Program
             hostingChecks.GetAwaiter().GetResult();
             CheckWindows(Path.Combine(taskRoot, "windows"));
             OwnerFlowChecks.Run(Path.Combine(taskRoot, "owner-flow"), Check, Await);
+            EditorReliabilityChecks.Run(Path.Combine(taskRoot, "editor-reliability"), Check, Await);
+            ReliabilityChecks.Run(Path.Combine(taskRoot, "reliability"), Check, Await);
             var imports = ModImportChecks.RunAsync(Path.Combine(taskRoot, "mod-import"), Check);
             Await(() => imports.IsCompleted, "Mod import regression scenarios complete");
             imports.GetAwaiter().GetResult();
@@ -216,14 +218,14 @@ internal static class Program
         {
             Check(empty.WindowStyle == WindowStyle.SingleBorderWindow && empty.ResizeMode == ResizeMode.CanResize, "Main window retains native Windows resize and title-bar controls");
             Check(Primary(empty) == "Add modpack" && Named<Button>(empty, "PlayButton").IsEnabled, "Empty library offers Add modpack as its primary action");
-            Check(Named<Border>(empty, "TerrainPanel").Visibility == Visibility.Collapsed && Named<Border>(empty, "PrismNotice").Visibility == Visibility.Collapsed, "Empty library hides terrain and premature Prism setup");
+            Check(Named<Border>(empty, "TerrainPanel").Visibility == Visibility.Collapsed && empty.FindName("PrismNotice") == null, "Empty library hides terrain and premature Prism setup");
             Capture(empty, "empty"); Capture(empty, "empty-min", 1000, 720);
             Click(empty, "PlayButton");
             Check(Named<TextBlock>(empty, "PageTitle").Text == "Add modpack", "Empty primary action opens the invite form");
             Capture(empty, "join");
-            Click(empty, "HostsNav");
-            Check(Named<TextBlock>(empty, "PageTitle").Text == "Hosting" && Named<FrameworkElement>(empty, "LibraryView").Visibility == Visibility.Collapsed, "Hosting is directly reachable from the sidebar");
-            Check(((SolidColorBrush)Named<Button>(empty, "HostsNav").Background).Color != ((SolidColorBrush)Named<Button>(empty, "PublishNav").Background).Color, "Hosting route visibly selects its own navigation item");
+            Click(empty, "PublishNav");
+            Check(Named<TextBlock>(empty, "PageTitle").Text == "Share packs" && Named<FrameworkElement>(empty, "LibraryView").Visibility == Visibility.Collapsed, "One Share packs page is directly reachable from the sidebar");
+            Check(empty.FindName("HostsNav") == null && Descendants(Named<Button>(empty, "PublishNav")).OfType<TextBlock>().Any(text => text.Text.StartsWith("Share packs")), "Sharing uses one fixed navigation item");
             Capture(empty, "hosting");
             Click(empty, "SettingsNav");
             Check(Descendants(empty).OfType<TextBlock>().Any(text => text.Text == "Official Hearth releases") && Descendants(empty).OfType<Button>().Count(button => button.Content is string text && text == "Check for updates") == 1, "Settings shows one update action for official Hearth releases");
@@ -246,9 +248,11 @@ internal static class Program
             Await(() => Primary(window) == "Check approval", "Pending membership offers Check approval instead of Play");
             Capture(window, "pending");
             Check(!Named<StackPanel>(window, "TerrainSelector").IsEnabled && fixture.ManifestRequests == 0, "Pending membership neither offers terrain changes nor requests protected release metadata");
+            Check(Descendants(Named<StackPanel>(window, "LibraryDetails")).OfType<Button>().Any(b => Equals(b.Content, "Copy fingerprint")), "Pending request prominently shows a copyable fingerprint");
+            var approvalTimer = (DispatcherTimer)typeof(MainWindow).GetField("libraryRefreshTimer", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+            approvalTimer.Interval = TimeSpan.FromMilliseconds(30);
             fixture.Access = "approved";
-            Click(window, "PlayButton");
-            Await(() => Primary(window) == "Set up Prism", "Approved pack without Prism offers setup as the next action");
+            Await(() => Primary(window) == "Set up Prism", "Pending library automatically discovers approval and offers Prism setup");
             Check(Named<RadioButton>(window, "TerrainVoxy").IsEnabled && !Named<RadioButton>(window, "TerrainDh").IsEnabled, "Approved manifest enables only terrain options supplied by its owner");
             var prismPath = Path.Combine(taskRoot, "prismlauncher.exe"); File.WriteAllText(prismPath, "fixture only; never executed");
             profile.State.PrismExecutable = prismPath;
@@ -258,7 +262,7 @@ internal static class Program
             Named<RadioButton>(window, "TerrainVoxy").IsChecked = true;
             Check(new ProfileStore(profile.Root).State.Packs.Single().Terrain == TerrainMode.Voxy, "Terrain selection persists in the encrypted per-pack profile");
             fixture.Access = "removed"; Click(window, "LibraryNav");
-            Await(() => Primary(window) == "Request access", "Removed membership offers a fresh access request");
+            Await(() => Primary(window) == "Paste a new invite", "Removed membership offers a new invite");
             Click(window, "PlayButton");
             Check(Named<TextBlock>(window, "PageTitle").Text == "Add modpack", "Removed member action opens the invite form");
             fixture.Access = "approved"; fixture.ManifestStatus = 404; Click(window, "LibraryNav");
@@ -267,6 +271,13 @@ internal static class Program
             var installation = Path.Combine(new PackSynchronizer(profile.Root).GetInstanceDirectory(pack.HostUrl, pack.PackId), ".hearth");
             Directory.CreateDirectory(installation);
             File.WriteAllText(Path.Combine(installation, "installed.json"), JsonSerializer.Serialize(new InstalledPack(pack.HostUrl, pack.PackId, "fixture-release", TerrainMode.Off, [], fixture.Manifest), JsonDefaults.Options));
+            fixture.Access = "archived"; Click(window, "LibraryNav");
+            Await(() => Named<TextBlock>(window, "PackStatusText").Text == "This pack was archived by its owner", "Archived pack has a clear player status");
+            fixture.Access = "approved"; fixture.ManifestStatus = 200;
+            fixture.Manifest = fixture.Manifest with { ReleaseId = "fixture-new-release", Notes = "Added a custom mod and improved compatibility." };
+            Click(window, "LibraryNav");
+            Await(() => Named<TextBlock>(window, "PackStatusText").Text == "Update available", "New release is detected for an existing instance");
+            Check(Descendants(Named<StackPanel>(window, "LibraryDetails")).OfType<Expander>().Any(x => Equals(x.Header, "What's new") && x.IsExpanded), "Available release notes are visible in the library");
             fixture.AccessStatus = 503; Click(window, "LibraryNav");
             Await(() => Primary(window) == "Play installed", "Unavailable host with a complete local installation offers Play installed");
             Check(Named<TextBlock>(window, "PackStatusHint").Text.Contains("No update or terrain change") && !Named<StackPanel>(window, "TerrainSelector").IsEnabled, "Offline action explains the unchanged installed copy and disables terrain editing");
@@ -284,7 +295,8 @@ internal sealed class LibraryFixture : IDisposable
     public int AccessStatus = 200;
     public int ManifestStatus = 200;
     public int ManifestRequests;
-    public PackManifest Manifest { get; } = new("fixture-pack", "fixture-release", "Fixture pack", "1.21.10", "fabric", "0.18.1", [new PackFile("mods/voxy.jar", new string('a', 64), 12, "voxy")]);
+    public int Requests;
+    public PackManifest Manifest { get; set; } = new("fixture-pack", "fixture-release", "Fixture pack", "1.21.10", "fabric", "0.18.1", [new PackFile("mods/voxy.jar", new string('a', 64), 12, "voxy")]);
     public LibraryFixture()
     {
         listener.Start(); Url = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -306,6 +318,7 @@ internal sealed class LibraryFixture : IDisposable
                 var stream = client.GetStream();
                 using var reader = new StreamReader(stream, Encoding.ASCII, false, 1024, leaveOpen: true);
                 var request = await reader.ReadLineAsync(cancellation.Token) ?? "";
+                Interlocked.Increment(ref Requests);
                 while (!string.IsNullOrEmpty(await reader.ReadLineAsync(cancellation.Token))) { }
                 var manifest = request.Contains("/manifest ", StringComparison.Ordinal);
                 if (manifest) Interlocked.Increment(ref ManifestRequests);

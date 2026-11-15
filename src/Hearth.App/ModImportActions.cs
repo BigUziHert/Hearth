@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Text.Json;
 using Hearth.Core;
 
 namespace Hearth.App;
@@ -10,6 +11,8 @@ namespace Hearth.App;
 public partial class MainWindow
 {
     private string modFilter = "";
+    private const string ModClipboardFormat = "Hearth.ModFiles.v1";
+    private sealed record ClipboardModFile(string Path, string Group);
 
     private void AttachModImport(FrameworkElement editor)
     {
@@ -54,6 +57,26 @@ public partial class MainWindow
             Status("Copy .jar files in File Explorer, or copy their full paths. Folders and web links cannot be added as mods.");
             return Task.CompletedTask;
         }
+        if (data.GetDataPresent(ModClipboardFormat) && data.GetData(ModClipboardFormat) is string metadata)
+        {
+            try
+            {
+                var entries = JsonSerializer.Deserialize<List<ClipboardModFile>>(metadata) ?? [];
+                if (entries.Count < paths.Length || entries.Any(x => x.Group is not ("base" or "voxy" or "distanthorizons")
+                    || !paths.Contains(x.Path, StringComparer.OrdinalIgnoreCase)) || entries.Select(x => x.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != paths.Length)
+                    throw new JsonException();
+                return Run("Pasting mods…", async ct =>
+                {
+                    var staged = new List<DraftItem>();
+                    foreach (var group in entries.GroupBy(x => x.Group))
+                        staged.AddRange(await DraftModImport.StageAsync(group.Select(x => x.Path), store.Root, group.Key, ct));
+                    ct.ThrowIfCancellationRequested();
+                    SaveDraftFiles(DraftModImport.Apply(draft!.Files, staged)); RenderEditor();
+                    Status("Mods pasted with their Required, Voxy, and Distant Horizons groups preserved. Review before publishing.");
+                });
+            }
+            catch (JsonException) { Status("The copied mod information is damaged. Copy the mods again from Hearth."); return Task.CompletedTask; }
+        }
         return AddFiles(paths, groupOverride: "base");
     }
 
@@ -62,13 +85,17 @@ public partial class MainWindow
         var selected = SelectedDraftItems();
         if (selected.Count == 0) return;
         var host = selectedHost!;
-        using var api = new HearthApi(host.Url, host.OwnerToken, certificatePin: host.CertificatePin);
+        using var api = CreateOwnerApi(host);
         var paths = new StringCollection();
+        var entries = new List<ClipboardModFile>();
         foreach (var item in selected)
-            paths.Add(await DraftModImport.GetSourceAsync(item, store.Root, api, selectedPack!.Id, ct));
+        {
+            var path = await DraftModImport.GetSourceAsync(item, store.Root, api, selectedPack!.Id, ct);
+            if (!paths.Contains(path)) paths.Add(path); entries.Add(new(path, item.File.Group));
+        }
         ct.ThrowIfCancellationRequested();
-        Clipboard.SetFileDropList(paths);
-        Status($"Copied {selected.Count} mod file(s). Paste into another pack or a folder in File Explorer.");
+        var data = new DataObject(); data.SetFileDropList(paths); data.SetData(ModClipboardFormat, JsonSerializer.Serialize(entries));
+        await ClipboardService.SetAsync(data, Status, $"Copied {selected.Count} mod file(s). Paste into another pack or a folder in File Explorer.");
     });
 
     private void SaveDraftFiles(List<DraftItem> files)

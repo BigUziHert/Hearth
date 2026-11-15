@@ -12,11 +12,11 @@ public sealed class HostException(int status, string message) : Exception(messag
     public int Status { get; } = status;
 }
 public sealed record HostSettings(string HostId, string Name, string OwnerTokenHash, int Port = 17842, string Bind = "127.0.0.1");
-public sealed record StoredMember(string Id, string DisplayName, string Status, string Role, string TokenHash, DateTimeOffset RequestedAt)
+public sealed record StoredMember(string Id, string DisplayName, string Status, string Role, string TokenHash, DateTimeOffset RequestedAt, string? InviteLabel = null, string? InviteId = null)
 {
-    public MemberInfo Info() => new(Id, DisplayName, Status, Role, TokenHash[..12], RequestedAt);
+    public MemberInfo Info() => new(Id, DisplayName, Status, Role, TokenHash[..12], RequestedAt, InviteLabel, InviteId);
 }
-public sealed record PackState(PackSummary Pack, List<StoredMember> Members);
+public sealed record PackState(PackSummary Pack, List<StoredMember> Members, List<PersonalInviteInfo>? PersonalInvites = null);
 public sealed record HostStatus(DateTimeOffset StartedAt, DateTimeOffset? LastPlayerAccessAt, string? LastPlayerName, string? LastPackName, string? LastOperation,
     long SuccessfulPlayerRequests, DateTimeOffset? LastInternetPlayerAccessAt = null, string? LastInternetPlayerName = null);
 
@@ -70,10 +70,35 @@ public sealed partial class HostStore : IDisposable
                 .Where(x => File.Exists(Path.Combine(x, "state.json")))
                 .Select(x => ReadJson<PackState>(Path.Combine(x, "state.json")))
                 .Where(x => isAdmin || x.Members.Any(m => EqualsHash(m.TokenHash, hash) && m.Status == "approved" && m.Role == "owner"))
-                .Select(x => x.Pack).OrderBy(x => x.Name).ToList();
+                .Select(Summary).OrderBy(x => x.Name).ToList();
             if (!isAdmin && packs.Count == 0) throw new HostException(403, "This credential cannot manage this host.");
             return packs;
         }
+    }
+
+    private static PackSummary Summary(PackState state) => state.Pack with { PendingCount = state.Members.Count(m => m.Status == "pending") };
+
+    public HostEndpoints Endpoints(string token)
+    {
+        if (!IsAdmin(HashToken(token))) throw new HostException(403, "Only the host administrator can view host connection addresses.");
+        var empty = new HostEndpoints(Settings.HostId, null, null, [], DateTimeOffset.UtcNow);
+        var path = Path.Combine(data, "advertised-endpoints.json");
+        if (!File.Exists(path)) return empty;
+        try
+        {
+            if (new FileInfo(path).Length > 65536) throw new InvalidDataException();
+            var endpoints = ReadJson<HostEndpoints>(path);
+            if (endpoints.HostId != Settings.HostId || endpoints.HomeNetworkAddresses is null || endpoints.HomeNetworkAddresses.Count > 32) throw new InvalidDataException();
+            var addresses = endpoints.HomeNetworkAddresses.Concat(endpoints.InternetAddress is null ? [] : new[] { endpoints.InternetAddress }).ToArray();
+            if (addresses.Length == 0) return empty;
+            if (endpoints.CertificatePin is null) throw new InvalidDataException();
+            var pin = HostCertificate.NormalizePin(endpoints.CertificatePin);
+            foreach (var address in addresses)
+                if (!HearthApi.NormalizeHost(address).StartsWith("https://", StringComparison.Ordinal)) throw new InvalidDataException();
+            return endpoints with { CertificatePin = pin };
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or ArgumentException or InvalidDataException)
+        { return empty; } // A partial/stale advertisement must never produce an untrusted link.
     }
 
     public HostStatus Status(string token)
@@ -122,14 +147,21 @@ public sealed partial class HostStore : IDisposable
         lock (gate)
         {
             var state = Get(id);
-            if (request.InviteCode is null || !EqualsHash(HashToken(state.Pack.InviteCode), HashToken(request.InviteCode)))
+            if (string.IsNullOrEmpty(request.InviteCode) || request.InviteCode.Length > 512)
+                throw new HostException(404, "This invite is invalid or has been replaced. Ask the owner for a new invite.");
+            var inviteHash = HashToken(request.InviteCode);
+            var personal = (state.PersonalInvites ?? []).FirstOrDefault(i => EqualsHash(HashToken(i.Code), inviteHash));
+            var shared = state.Pack.SharedInviteEnabled && EqualsHash(HashToken(state.Pack.InviteCode), inviteHash);
+            if (!shared && (personal is null || personal.Revoked || personal.ExpiresAt <= DateTimeOffset.UtcNow || (personal.SingleUse && personal.UsedAt is not null)))
                 throw new HostException(404, "This invite is invalid or has been replaced. Ask the owner for a new invite.");
             if (string.IsNullOrWhiteSpace(request.DisplayName) || request.DisplayName.Trim().Length > 80 || request.DisplayName.Any(char.IsControl))
                 throw new HostException(400, "Enter a display name between 1 and 80 characters.");
-            if (state.Members.Count >= 2000) throw new HostException(409, "This pack's member request limit has been reached. Ask the owner to remove old requests.");
+            if (state.Members.Count(x => x.Status != "removed") >= 2000) throw new HostException(409, "This pack's member request limit has been reached. Ask the owner to decline old requests.");
             var token = Secret();
-            var member = new StoredMember(Guid.NewGuid().ToString("N"), request.DisplayName.Trim(), "pending", "player", HashToken(token), DateTimeOffset.UtcNow);
-            Save(state with { Members = [.. state.Members, member] });
+            var member = new StoredMember(Guid.NewGuid().ToString("N"), request.DisplayName.Trim(), "pending", "player", HashToken(token), DateTimeOffset.UtcNow, personal?.Label, personal?.Id);
+            // Reclaimed requests keep a bounded tombstone history for removed-member status.
+            var retained = state.Members.Where(m => m.Status != "removed").Concat(state.Members.Where(m => m.Status == "removed").OrderByDescending(m => m.RequestedAt).Take(2000)).ToList();
+            Save(state with { Members = [.. retained, member], PersonalInvites = (state.PersonalInvites ?? []).Select(i => i.Id == personal?.Id ? i with { UsedAt = DateTimeOffset.UtcNow } : i).ToList() });
             return new(id, state.Pack.Name, member.Id, token, "pending");
         }
     }
@@ -138,11 +170,12 @@ public sealed partial class HostStore : IDisposable
     {
         lock (gate)
         {
-            var state = Get(id);
+            var state = GetIncludingArchived(id, out var archived);
             var hash = HashToken(token);
-            if (IsAdmin(hash)) return new("approved", "owner", state.Pack.Name);
+            if (IsAdmin(hash)) return new(archived ? "archived" : "approved", "owner", state.Pack.Name);
             var member = state.Members.SingleOrDefault(x => EqualsHash(x.TokenHash, hash));
             if (member is null) throw new HostException(403, "Access was removed. Ask the pack owner for a new invitation.");
+            if (archived) return new("archived", member.Role, state.Pack.Name);
             if (member.Status == "approved") NotePlayerAccess(id, token, "access check", internet);
             return new(member.Status, member.Role, state.Pack.Name);
         }
@@ -153,7 +186,7 @@ public sealed partial class HostStore : IDisposable
         lock (gate)
         {
             var state = Get(id); Authorize(state, token, owner: true);
-            return state.Members.Select(x => x.Info()).OrderBy(x => x.RequestedAt).ToList();
+            return state.Members.Where(x => x.Status != "removed").Select(x => x.Info()).OrderBy(x => x.RequestedAt).ToList();
         }
     }
 
@@ -162,13 +195,14 @@ public sealed partial class HostStore : IDisposable
         lock (gate)
         {
             var state = Get(id); Authorize(state, token, owner: true);
-            if (request.Status is not ("approved" or "removed" or "pending") || request.Role is not ("owner" or "player"))
+            if (request.Status is not ("approved" or "removed" or "pending") || request.Role is not (null or "owner" or "player"))
                 throw new HostException(400, "Invalid member status or role.");
             var existing = state.Members.SingleOrDefault(x => x.Id == memberId) ?? throw new HostException(404, "Member not found.");
-            if ((request.Role == "owner" || existing.Role == "owner") && !IsAdmin(HashToken(token)))
+            var role = request.Role ?? existing.Role;
+            if ((role == "owner" || existing.Role == "owner") && !IsAdmin(HashToken(token)))
                 throw new HostException(403, "Only the host owner can appoint or change pack owners.");
-            var updated = existing with { Status = request.Status, Role = request.Role };
-            Save(state with { Members = request.Status == "removed" ? state.Members.Where(x => x.Id != memberId).ToList() : state.Members.Select(x => x.Id == memberId ? updated : x).ToList() });
+            var updated = existing with { Status = request.Status, Role = role };
+            Save(state with { Members = state.Members.Select(x => x.Id == memberId ? updated : x).ToList() });
             return updated.Info();
         }
     }
@@ -180,7 +214,99 @@ public sealed partial class HostStore : IDisposable
             var state = Get(id); Authorize(state, token, owner: true);
             var next = state with { Pack = state.Pack with { InviteCode = Secret() } };
             Save(next);
-            return next.Pack;
+            return Summary(next);
+        }
+    }
+
+    public PackSummary SetSharedInvite(string id, string token, SharedInviteUpdate request)
+    {
+        lock (gate)
+        {
+            var state = Get(id); Authorize(state, token, owner: true);
+            var next = state with { Pack = state.Pack with { SharedInviteEnabled = request.Enabled } };
+            Save(next); return Summary(next);
+        }
+    }
+
+    public List<PersonalInviteInfo> PersonalInvites(string id, string token)
+    {
+        lock (gate)
+        {
+            var state = Get(id); Authorize(state, token, owner: true);
+            return (state.PersonalInvites ?? []).OrderByDescending(i => i.CreatedAt).ToList();
+        }
+    }
+
+    public PersonalInviteInfo CreatePersonalInvite(string id, string token, CreatePersonalInviteRequest request)
+    {
+        lock (gate)
+        {
+            var state = Get(id); Authorize(state, token, owner: true);
+            if (string.IsNullOrWhiteSpace(request.Label) || request.Label.Trim().Length > 80 || request.Label.Any(char.IsControl))
+                throw new HostException(400, "Enter an invite label between 1 and 80 characters.");
+            if (request.ExpiresAt <= DateTimeOffset.UtcNow) throw new HostException(400, "Choose an expiry time in the future.");
+            var invites = state.PersonalInvites ?? [];
+            bool Active(PersonalInviteInfo i) => !i.Revoked && (i.ExpiresAt is null || i.ExpiresAt > DateTimeOffset.UtcNow) && (!i.SingleUse || i.UsedAt is null);
+            if (invites.Count(Active) >= 1000) throw new HostException(409, "Revoke unused personal invites before creating more.");
+            var invite = new PersonalInviteInfo(Guid.NewGuid().ToString("N"), request.Label.Trim(), Secret(), request.SingleUse, request.ExpiresAt, DateTimeOffset.UtcNow);
+            var retained = invites.Where(Active).Concat(invites.Where(i => !Active(i)).OrderByDescending(i => i.CreatedAt).Take(2000)).ToList();
+            Save(state with { PersonalInvites = [.. retained, invite] }); return invite;
+        }
+    }
+
+    public PersonalInviteInfo RevokePersonalInvite(string id, string inviteId, string token)
+    {
+        lock (gate)
+        {
+            var state = Get(id); Authorize(state, token, owner: true);
+            var invites = state.PersonalInvites ?? [];
+            var invite = invites.SingleOrDefault(i => i.Id == inviteId) ?? throw new HostException(404, "Personal invite not found.");
+            var revoked = invite with { Revoked = true };
+            Save(state with { PersonalInvites = invites.Select(i => i.Id == inviteId ? revoked : i).ToList() }); return revoked;
+        }
+    }
+
+    public DeclineAllResult DeclineAll(string id, string token)
+    {
+        lock (gate)
+        {
+            var state = Get(id); Authorize(state, token, owner: true);
+            var administrator = IsAdmin(HashToken(token));
+            bool Decline(StoredMember member) => member.Status == "pending" && (administrator || member.Role != "owner");
+            var count = state.Members.Count(Decline);
+            Save(state with { Members = state.Members.Select(m => Decline(m) ? m with { Status = "removed" } : m).ToList() });
+            return new(count);
+        }
+    }
+
+    public ArchivePackResponse ArchivePack(string id, string token)
+    {
+        lock (gate)
+        {
+            if (!IsAdmin(HashToken(token))) throw new HostException(403, "Only the host administrator can archive packs.");
+            var state = Get(id);
+            var source = PackDirectory(id);
+            var archive = Path.Combine(data, "archive"); Directory.CreateDirectory(archive);
+            var destination = Path.Combine(archive, id);
+            if ((File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0 || (File.GetAttributes(archive) & FileAttributes.ReparsePoint) != 0)
+                throw new HostException(409, "The pack or archive folder is linked. The host administrator must check its location.");
+            var result = new ArchivePackResponse(id, state.Pack.Name, DateTimeOffset.UtcNow);
+            WriteJson(Path.Combine(source, "archive-info.json"), result);
+            try { Directory.Move(source, destination); }
+            catch (IOException) { throw new HostException(409, "The pack could not be archived while its files are in use. Let downloads finish, then retry. Its files were kept."); }
+            return result;
+        }
+    }
+
+    public PackManifest ReleaseManifest(string id, string releaseId, string token)
+    {
+        lock (gate)
+        {
+            var state = Get(id); Authorize(state, token);
+            if (!Guid.TryParseExact(releaseId, "N", out _)) throw new HostException(404, "Release not found.");
+            var path = ReleasePath(id, releaseId);
+            if (!File.Exists(path)) throw new HostException(404, "Release not found.");
+            return ReadJson<PackManifest>(path);
         }
     }
 
@@ -296,17 +422,8 @@ public sealed partial class HostStore : IDisposable
                 catch (Exception exception) when (exception is InvalidDataException or JsonException or InvalidOperationException)
                 { throw new HostException(400, $"The mod descriptor in {file.Path} is invalid: {exception.Message}"); }
             }
-            foreach (var selection in new[] { "base", "voxy", "distanthorizons" })
-            {
-                var selectedIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var file in files.Where(x => x.Group == "base" || x.Group == selection).DistinctBy(x => x.Path, StringComparer.OrdinalIgnoreCase))
-                foreach (var modId in identities[file.Sha256])
-                {
-                    if (selectedIds.TryGetValue(modId, out var existingPath))
-                        throw new HostException(400, $"The {selection} selection has duplicate mod ID '{modId}' in {existingPath} and {file.Path}. Remove the older version before publishing.");
-                    selectedIds.Add(modId, file.Path);
-                }
-            }
+            try { ModIdentityValidation.ValidateGroups(files.Select(file => (file, identities[file.Sha256]))); }
+            catch (InvalidDataException exception) { throw new HostException(400, exception.Message); }
         lock (gate)
         {
             // Authorization and optimistic concurrency are checked again after verification.
@@ -333,7 +450,19 @@ public sealed partial class HostStore : IDisposable
     private bool IsAdmin(string hash) => EqualsHash(Settings.OwnerTokenHash, hash);
     private PackState Get(string id)
     {
+        var state = GetIncludingArchived(id, out var archived);
+        if (archived) throw new HostException(410, "This pack was archived by its owner.");
+        return state;
+    }
+    private PackState GetIncludingArchived(string id, out bool archived)
+    {
         var path = Path.Combine(PackDirectory(id), "state.json");
+        archived = false;
+        if (!File.Exists(path))
+        {
+            path = Path.Combine(data, "archive", id, "state.json");
+            archived = File.Exists(path);
+        }
         if (!File.Exists(path)) throw new HostException(404, "Pack not found.");
         return ReadJson<PackState>(path);
     }

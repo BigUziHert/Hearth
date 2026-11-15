@@ -15,6 +15,7 @@ if (args.Length == 2 && args[0] == "--installer-update-probe") {
 }
 
 // A harmless subprocess probe captures the exact Prism launch arguments.
+if (args.Contains("--native-process-probe")) { await Task.Delay(TimeSpan.FromSeconds(30)); return; }
 if (args.Contains("--dir")) {
     var dir = args[Array.IndexOf(args, "--dir") + 1]; Directory.CreateDirectory(dir);
     await File.WriteAllTextAsync(Path.Combine(dir, "prism-handoff-probe.json"), JsonSerializer.Serialize(args)); return;
@@ -49,6 +50,7 @@ sealed class IntegrationSuite
             await Throws<HttpRequestException>(() => unpinned.HealthAsync(), "Real host self-signed HTTPS requires its pinned identity");
         using var owner = new HearthApi(url, token); using var anon = new HearthApi(url);
         Check(!string.IsNullOrWhiteSpace((await anon.HealthAsync()).HostId), "Public health endpoint exposes service identity");
+        await ProtocolUpgradeChecks.RunAsync(owner, url, Path.Combine(data, "host"), certificatePin, Check);
         var a = await owner.CreatePackAsync(new("Coast & Copper","1.21.1","fabric","0.16.10"));
         var b = await owner.CreatePackAsync(new("Mosslight","1.21.1","fabric","0.16.10"));
         Check((await owner.ListPacksAsync()).Count == 2,"One host manages two independent private packs");
@@ -131,6 +133,7 @@ sealed class IntegrationSuite
         FlowInputChecks.Run(Check);
         await SecureHostChecks.RunAsync(Path.Combine(data, "secure-host-checks"), Check);
         await InstalledPlayChecks.RunAsync(Path.Combine(data, "offline-play-checks"), Check);
+        await RuntimeIdentityChecks.RunAsync(Path.Combine(data, "runtime-identity-checks"), Check);
         complete=true; Console.WriteLine($"PASS: {checks.Count} checks. Evidence: {Path.Combine(data,"report.json")}");
     }
 

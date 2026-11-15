@@ -75,12 +75,20 @@ app.UseRateLimiter();
 app.MapGet("/health", () => new HealthResponse(store.Settings.Name, store.Settings.HostId, typeof(HostStore).Assembly.GetName().Version?.ToString(3) ?? "1.0.0", DateTimeOffset.UtcNow));
 app.MapGet("/owner/packs", (HttpContext context) => store.ListOwned(Bearer(context)));
 app.MapGet("/owner/status", (HttpContext context) => store.Status(Bearer(context)));
+app.MapGet("/owner/endpoints", (HttpContext context) => store.Endpoints(Bearer(context)));
 app.MapPost("/owner/packs", (HttpContext context, CreatePackRequest request) => store.CreatePack(Bearer(context), request));
 app.MapGet("/packs/{id}/access", (HttpContext context, string id) => store.Access(id, Bearer(context), InternetPlayerRequest(context)));
 app.MapPost("/packs/{id}/join", (string id, JoinRequest request) => store.Join(id, request)).RequireRateLimiting("join");
 app.MapGet("/packs/{id}/members", (HttpContext context, string id) => store.Members(id, Bearer(context)));
 app.MapPatch("/packs/{id}/members/{memberId}", (HttpContext context, string id, string memberId, MemberUpdate request) => store.UpdateMember(id, memberId, Bearer(context), request));
 app.MapDelete("/packs/{id}/invite", (HttpContext context, string id) => store.RotateInvite(id, Bearer(context)));
+app.MapPatch("/packs/{id}/invite", (HttpContext context, string id, SharedInviteUpdate request) => store.SetSharedInvite(id, Bearer(context), request));
+app.MapGet("/packs/{id}/invites", (HttpContext context, string id) => store.PersonalInvites(id, Bearer(context)));
+app.MapPost("/packs/{id}/invites", (HttpContext context, string id, CreatePersonalInviteRequest request) => store.CreatePersonalInvite(id, Bearer(context), request));
+app.MapDelete("/packs/{id}/invites/{inviteId}", (HttpContext context, string id, string inviteId) => store.RevokePersonalInvite(id, inviteId, Bearer(context)));
+app.MapPost("/packs/{id}/members/decline-all", (HttpContext context, string id) => store.DeclineAll(id, Bearer(context)));
+app.MapPost("/packs/{id}/archive", (HttpContext context, string id) => store.ArchivePack(id, Bearer(context)));
+app.MapGet("/packs/{id}/releases/{releaseId}/manifest", (HttpContext context, string id, string releaseId) => store.ReleaseManifest(id, releaseId, Bearer(context)));
 app.MapGet("/packs/{id}/manifest", (HttpContext context, string id) =>
 {
     var manifest = store.Manifest(id, Bearer(context));

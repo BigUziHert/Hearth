@@ -9,7 +9,7 @@ public record SyncProgress(string Message, long CompletedBytes = 0, long TotalBy
     public double Percent => TotalBytes > 0 ? Math.Clamp(100.0 * CompletedBytes / TotalBytes, 0, 100) : 0;
 }
 public record SyncResult(string InstanceId, string InstanceDirectory, int DownloadedFiles, int RemovedFiles, string ReleaseId);
-public record InstalledPack(string HostUrl, string PackId, string ReleaseId, TerrainMode Terrain, List<PackFile> Files, PackManifest Manifest);
+public record InstalledPack(string HostUrl, string PackId, string ReleaseId, TerrainMode Terrain, List<PackFile> Files, PackManifest Manifest, string? HostId = null, string? CertificatePin = null);
 
 /// <summary>Stages verified downloads first, then applies a journaled transaction to owned files only.</summary>
 public sealed class PackSynchronizer
@@ -24,6 +24,25 @@ public sealed class PackSynchronizer
     }
     public string GetInstanceId(string hostUrl, string packId) => "hearth-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(HearthApi.NormalizeHost(hostUrl) + "\n" + packId)))[..24];
     public string GetInstanceDirectory(string hostUrl, string packId) => Path.Combine(InstanceDirectory, GetInstanceId(hostUrl, packId));
+    public string? FindInstallationUrl(string hostId, string packId, string? pin)
+    {
+        if (string.IsNullOrEmpty(pin) || !Directory.Exists(InstanceDirectory)) return null;
+        RejectLinks(InstanceDirectory);
+        foreach (var directory in Directory.EnumerateDirectories(InstanceDirectory, "hearth-*"))
+        {
+            var path = Path.Combine(directory, ".hearth", "installed.json");
+            try
+            {
+                RejectLinks(path);
+                if (!File.Exists(path)) continue;
+                var installed = Read<InstalledPack>(path);
+                if (installed.HostId == hostId && installed.PackId == packId && string.Equals(installed.CertificatePin, pin, StringComparison.OrdinalIgnoreCase)
+                    && Path.GetFileName(directory) == GetInstanceId(installed.HostUrl, packId)) return installed.HostUrl;
+            }
+            catch (Exception ex) when (ex is IOException or JsonException or ArgumentException or InvalidDataException or UnauthorizedAccessException) { }
+        }
+        return null;
+    }
     public InstalledPack? GetInstalled(string hostUrl, string packId)
     {
         var path = Path.Combine(GetInstanceDirectory(hostUrl, packId), ".hearth", "installed.json");
@@ -31,23 +50,24 @@ public sealed class PackSynchronizer
         catch (Exception exception) when (exception is JsonException or InvalidDataException)
         { throw new IOException(RecordRecovery, exception); }
     }
-    public Task RecoverAsync(string hostUrl, string packId, CancellationToken ct = default)
+    public Task RecoverAsync(string hostUrl, string packId, CancellationToken ct = default) => Task.Run(() => RecoverCore(hostUrl, packId, ct), ct);
+    private void RecoverCore(string hostUrl, string packId, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var instance = GetInstanceDirectory(hostUrl, packId);
         RejectLinks(Path.Combine(instance, ".hearth"));
-        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"));
+        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"), ct);
         Directory.CreateDirectory(Path.Combine(instance, ".hearth"));
         using var syncLock = AcquireLock(instance);
         Recover(instance);
-        return Task.CompletedTask;
     }
-    public async Task<InstalledPack> VerifyInstalledAsync(string hostUrl, string packId, CancellationToken ct = default)
+    public Task<InstalledPack> VerifyInstalledAsync(string hostUrl, string packId, CancellationToken ct = default) => Task.Run(() => VerifyInstalledCoreAsync(hostUrl, packId, ct), ct);
+    private async Task<InstalledPack> VerifyInstalledCoreAsync(string hostUrl, string packId, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var instance = GetInstanceDirectory(hostUrl, packId);
         RejectLinks(Path.Combine(instance, ".hearth"));
-        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"));
+        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"), ct);
         Directory.CreateDirectory(Path.Combine(instance, ".hearth"));
         using var syncLock = AcquireLock(instance);
         Recover(instance);
@@ -109,7 +129,8 @@ public sealed class PackSynchronizer
             throw new IOException(repair, exception);
         }
     }
-    public async Task<SyncResult> SyncAsync(HearthApi api, JoinedPack pack, IProgress<SyncProgress>? progress = null, CancellationToken ct = default)
+    public Task<SyncResult> SyncAsync(HearthApi api, JoinedPack pack, IProgress<SyncProgress>? progress = null, CancellationToken ct = default) => Task.Run(() => SyncCoreAsync(api, pack, progress, ct), ct);
+    private async Task<SyncResult> SyncCoreAsync(HearthApi api, JoinedPack pack, IProgress<SyncProgress>? progress, CancellationToken ct)
     {
         if (!api.HostUrl.Equals(HearthApi.NormalizeHost(pack.HostUrl), StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("The connection does not match this pack's host.");
         var instance = GetInstanceDirectory(pack.InstallationUrl, pack.PackId);
@@ -117,7 +138,7 @@ public sealed class PackSynchronizer
         Directory.CreateDirectory(Path.Combine(instance, ".hearth"));
         RejectLinks(instance);
         using var syncLock = AcquireLock(instance);
-        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"));
+        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"), ct);
         Recover(instance);
         progress?.Report(new("Checking your access and the latest complete release…"));
         var manifest = await api.ManifestAsync(pack.PackId, ct);
@@ -140,6 +161,7 @@ public sealed class PackSynchronizer
         foreach (var file in selected)
         {
             ct.ThrowIfCancellationRequested();
+            progress?.Report(new("Verifying files… " + file.Path));
             var target = OwnedPath(instance, ".minecraft/" + file.Path);
             if (File.Exists(target) && !previous.ContainsKey(file.Path)) throw new IOException("A personal file already exists at " + file.Path + ". Move or rename it before retrying. Hearth will not overwrite it.");
             if (await ModFiles.MatchesAsync(target, file, ct)) continue;
@@ -160,6 +182,7 @@ public sealed class PackSynchronizer
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
         var removals = previous.Values.Where(f => !next.ContainsKey(f.Path)).ToList();
+        progress?.Report(new("Checking mod identities…"));
         var modIdentities = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in selected)
         {
@@ -171,10 +194,11 @@ public sealed class PackSynchronizer
             }
         }
         var versionJson = CreatePrismMetadata(manifest);
-        var newInstalled = new InstalledPack(HearthApi.NormalizeHost(pack.InstallationUrl), pack.PackId, manifest.ReleaseId, pack.Terrain, selected, manifest);
+        var newInstalled = new InstalledPack(HearthApi.NormalizeHost(pack.InstallationUrl), pack.PackId, manifest.ReleaseId, pack.Terrain, selected, manifest, pack.HostId, pack.CertificatePin);
         ct.ThrowIfCancellationRequested();
         // Check again after network activity, in case the user opened Prism while downloads ran.
-        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"));
+        PrismService.EnsureNotRunning(instance, Path.Combine(ProfileRoot, "Prism"), ct);
+        progress?.Report(new("Preparing update…"));
         var txn = Path.Combine(instance, ".hearth", "transaction");
         Directory.CreateDirectory(Path.Combine(txn, "backup"));
         Directory.CreateDirectory(Path.Combine(txn, "new"));
@@ -183,15 +207,16 @@ public sealed class PackSynchronizer
         var journal = new SyncJournal("prepared", []);
         foreach (var relative in changed)
         {
+            ct.ThrowIfCancellationRequested();
             var source = OwnedPath(instance, relative);
             var entry = new JournalEntry(relative, File.Exists(source), journal.Entries.Count.ToString());
-            if (entry.Existed) CopyDurable(source, Path.Combine(txn, "backup", entry.Backup));
+            if (entry.Existed) CopyDurable(source, Path.Combine(txn, "backup", entry.Backup), ct);
             journal.Entries.Add(entry);
         }
         for (var i = 0; i < replacements.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
-            CopyDurable(Path.Combine(cache, replacements[i].Sha256.ToLowerInvariant()), Path.Combine(txn, "new", i.ToString()));
+            CopyDurable(Path.Combine(cache, replacements[i].Sha256.ToLowerInvariant()), Path.Combine(txn, "new", i.ToString()), ct);
         }
         ct.ThrowIfCancellationRequested();
         AtomicJson(Path.Combine(txn, "journal.json"), journal);
@@ -305,11 +330,12 @@ public sealed class PackSynchronizer
         using (var stream = new FileStream(path + ".tmp", FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough)) { stream.Write(bytes); stream.Flush(true); }
         File.Move(path + ".tmp", path, true);
     }
-    private static void CopyDurable(string source, string destination)
+    private static void CopyDurable(string source, string destination, CancellationToken ct = default)
     {
         using var input = File.OpenRead(source);
         using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 65536, FileOptions.WriteThrough);
-        input.CopyTo(output);
+        var buffer = new byte[65536]; int count;
+        while ((count = input.Read(buffer)) != 0) { ct.ThrowIfCancellationRequested(); output.Write(buffer, 0, count); }
         output.Flush(true);
     }
     private record JournalEntry(string Path, bool Existed, string Backup);

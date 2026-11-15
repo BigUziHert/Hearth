@@ -14,6 +14,15 @@ public partial class MainWindow
 {
     private DispatcherTimer? hostingStatusTimer;
     private string pendingHostLink = "";
+    private readonly Dictionary<string, HostEndpoints> remoteHostEndpoints = [];
+    private bool CacheHostEndpoints(HostConnection host, HostEndpoints endpoints)
+    {
+        if (host.HostId == null || host.HostId != endpoints.HostId) return false;
+        if (host.CertificatePin != null && endpoints.CertificatePin != null
+            && !host.CertificatePin.Equals(endpoints.CertificatePin, StringComparison.OrdinalIgnoreCase)) return false;
+        if ((endpoints.InternetAddress != null || endpoints.HomeNetworkAddresses.Count > 0) && endpoints.CertificatePin == null) return false;
+        remoteHostEndpoints[host.Id] = endpoints; return true;
+    }
     private bool IsOwnedHost(HostConnection host) => host.Id == store.State.LocalHostConnectionId;
     private static bool IsInternetAddress(string value)
     {
@@ -26,18 +35,28 @@ public partial class MainWindow
     }
     private HostLink? GetLanSharingEndpoint(HostConnection host)
     {
-        if (!IsOwnedHost(host)) return !new Uri(host.Url).IsLoopback && !IsInternetAddress(host.Url) ? new(host.Url, host.CertificatePin, host.HostId) : null;
+        if (!IsOwnedHost(host))
+        {
+            if (remoteHostEndpoints.TryGetValue(host.Id, out var advertised)) return advertised.HomeNetworkAddresses.FirstOrDefault() is { } home
+                ? new(home, advertised.CertificatePin, advertised.HostId) : null;
+            return !new Uri(host.Url).IsLoopback && !IsInternetAddress(host.Url) ? new(host.Url, host.CertificatePin, host.HostId) : null;
+        }
         var local = (Application.Current as App)?.LocalHost;
         var result = local?.Network?.Result;
-        return local?.IsRunning == true && result?.FirewallReady == true && result.LocalAddresses.FirstOrDefault() is { } address
+        return local?.IsSharing == true && result?.LocalAddresses.FirstOrDefault() is { } address
             ? new(address, local.CertificatePin, local.HostId) : null;
     }
     private HostLink? GetPublicSharingEndpoint(HostConnection host)
     {
-        if (!IsOwnedHost(host)) return IsInternetAddress(host.Url) ? new(host.Url, host.CertificatePin, host.HostId) : null;
+        if (!IsOwnedHost(host))
+        {
+            if (remoteHostEndpoints.TryGetValue(host.Id, out var advertised)) return advertised.InternetAddress is { } internet
+                ? new(internet, advertised.CertificatePin, advertised.HostId) : null;
+            return IsInternetAddress(host.Url) ? new(host.Url, host.CertificatePin, host.HostId) : null;
+        }
         var local = (Application.Current as App)?.LocalHost;
         var result = local?.Network?.Result;
-        return local?.IsRunning == true && result?.FirewallReady == true && result.PublicAddress is { } address
+        return local?.IsSharing == true && local.InternetAddress is { } address
             ? new(address, local.CertificatePin, local.HostId) : null;
     }
     private HostLink? GetSharingEndpoint(HostConnection host) => GetPublicSharingEndpoint(host) ?? GetLanSharingEndpoint(host);
@@ -50,174 +69,196 @@ public partial class MainWindow
     }
     private void CopyHostLink(HostLink link)
     {
-        Clipboard.SetText(link.ToString());
-        Status("Host connection link copied. On your other PC, paste it into Connect an existing host and enter the owner key.");
+        CopyText(link.ToString(), "Host connection link copied. On your other PC, paste it into Connect an existing host and enter the owner key.");
     }
     private void ShowHosts() => ShowHosts(expandLocal: false);
     private void ShowHosts(bool expandLocal)
     {
-        PageStart("hosts", "Hosting", "");
-        var ownedHostCards = new List<(HostConnection Host, TextBlock Health, Button Manage)>();
-        if (store.State.Hosts.Count == 0)
+        HostConnectionMigration.NormalizeDelegated(store);
+        PageStart("hosts", "Share packs", "");
+        var app = Application.Current as App;
+        var owned = store.State.Hosts.FirstOrDefault(IsOwnedHost);
+        var local = Card("This PC", "Host pack files while Hearth is open or in the system tray. Your Minecraft world server stays separate.");
+        AddLocalHostingControls(local, app);
+        if (owned != null)
         {
-            var intro = Card("Choose where your packs live", "Connect to your Windows server, or host from this PC.");
-            intro.Children.Add(Text("Players don't need to set up hosting.", 13, false, "#ADBAB1"));
+            AddHostStatusAndLinks(owned, local);
+            AddOwnerPacksToHostCard(owned, local);
         }
-        else
+        foreach (var host in store.State.Hosts.Where(h => !IsOwnedHost(h)).ToArray())
         {
-            foreach (var host in store.State.Hosts.ToArray())
+            var card = Card(host.IsDelegated && !host.Name.StartsWith("Shared with me", StringComparison.OrdinalIgnoreCase)
+                ? "Shared with me · " + host.Name : host.Name, host.Url);
+            AddHostStatusAndLinks(host, card);
+            AddOwnerPacksToHostCard(host, card);
+            var options = new StackPanel();
+            var actions = Row(Button("Rename", () => RenameHost(host), true));
+            if (!host.IsDelegated)
             {
-                var card = Card(host.Name, IsOwnedHost(host) ? "Your modpack files are hosted on this PC." : host.Url);
-                var health = Text("Checking connection…", 13, false, "#ADBAB1"); card.Children.Add(health);
-                _ = CheckHostConnection(host, health);
-                if (IsOwnedHost(host))
-                {
-                    card.Children.Add(Text(GetSharingDescription(host), 13, false, "#ADBAB1"));
-                    if (GetPublicSharingEndpoint(host) is { } publicLink)
-                    {
-                        card.Children.Add(Text("Internet address · " + publicLink.HostUrl, 13, true));
-                        card.Children.Add(Text("Secure sharing is configured. Check connection shows whether an outside player has connected since hosting started.", 12, false, "#ADBAB1"));
-                        card.Children.Add(Row(Button("Copy host connection link", () =>
-                        {
-                            if (GetPublicSharingEndpoint(host) is { } current) CopyHostLink(current);
-                            else { ShowHosts(expandLocal: true); Status("Internet sharing changed. Retry connection setup before copying a link."); }
-                        }, true)));
-                    }
-                    if (GetLanSharingEndpoint(host) is { } lanLink)
-                    {
-                        card.Children.Add(Text("On your home network · " + lanLink.HostUrl, 13, true));
-                        card.Children.Add(Row(Button("Copy home network link", () =>
-                        {
-                            if (GetLanSharingEndpoint(host) is { } current) CopyHostLink(current);
-                            else { ShowHosts(expandLocal: true); Status("Start hosting before copying a connection link."); }
-                        }, true)));
-                    }
-                    card.Children.Add(Text("Friends join with a pack invite from Manage packs → Members. Host connection links are for managing packs from another PC.", 12, false, "#ADBAB1"));
-                }
-                var manage = Button("Manage packs", () =>
-                {
-                    if (selectedHost?.Id != host.Id) { selectedPack = null; draft = null; published = null; }
-                    selectedHost = host; ShowPublishing();
-                });
-                manage.IsEnabled = !IsOwnedHost(host) || (Application.Current as App)?.LocalHost?.IsRunning == true;
-                if (IsOwnedHost(host)) ownedHostCards.Add((host, health, manage));
-                card.Children.Add(Row(manage, Button("Check connection", () => _ = CheckHostConnection(host, health), true)));
-                var details = new StackPanel { Margin = new(0, 10, 0, 0) };
-                details.Children.Add(Text("Use the owner key to connect from another PC. It gives management access.", 12, false, "#ADBAB1"));
-                var connectionActions = Row(Button("Copy owner key", () => { Clipboard.SetText(host.OwnerToken); Status("Owner key copied. Keep it private."); }, true));
-                if (!IsOwnedHost(host) && !new Uri(host.Url).IsLoopback)
-                    connectionActions.Children.Add(Button("Copy host connection link", () => CopyHostLink(new(host.Url, host.CertificatePin, host.HostId)), true));
-                if (!IsOwnedHost(host)) connectionActions.Children.Add(Button("Forget connection", () =>
-                {
-                    if (MessageBox.Show(this, $"Remove {host.Name} from this app? Copy its owner key first if you need to reconnect. Its packs and joined packs will remain.", "Forget host connection", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-                    store.State.Hosts.RemoveAll(x => x.Id == host.Id); ownerPackCache.Remove(host.Id); ownerAdminCache.Remove(host.Id);
-                    if (selectedHost?.Id == host.Id) { selectedHost = null; selectedPack = null; draft = null; published = null; }
-                    store.Save(); ShowHosts();
-                }, true));
-                details.Children.Add(connectionActions);
-                card.Children.Add(new Expander { Header = "Connection options", Content = details, Margin = new(0, 10, 0, 0) });
+                actions.Children.Add(Button("Copy owner key", () => CopyText(host.OwnerToken, "Owner key copied. Keep it private."), true));
+                actions.Children.Add(Button("Copy host connection link", () => CopyHostLink(new(host.Url, host.CertificatePin, host.HostId)), true));
             }
+            actions.Children.Add(Button("Forget connection", () =>
+            {
+                if (MessageBox.Show(this, $"Remove {host.Name} from this app? Its packs, your drafts, and joined packs will remain.", "Forget host connection", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+                store.State.Hosts.RemoveAll(x => x.Id == host.Id); ownerPackCache.Remove(host.Id); ownerAdminCache.Remove(host.Id); remoteHostEndpoints.Remove(host.Id);
+                if (selectedHost?.Id == host.Id) { selectedHost = null; selectedPack = null; draft = null; published = null; }
+                store.Save(); ShowHosts();
+            }, true));
+            options.Children.Add(actions);
+            card.Children.Add(new Expander { Header = "Connection options", Content = options, Margin = new(0, 10, 0, 0) });
         }
-        var add = Card("Add a host");
-        var remoteContent = new StackPanel { Margin = new(0, 12, 0, 8) };
-        remoteContent.Children.Add(Text("On the host PC, open Hosting and copy its host connection link and owner key. Paste them here to manage the same packs from this PC.", 13, false, "#ADBAB1"));
-        var name = Field(remoteContent, "Name", "My server");
-        var url = Field(remoteContent, "Host connection link", pendingHostLink);
-        remoteContent.Children.Add(Text("Starts with hearth://host. An existing HTTPS host address is also supported.", 12, false, "#ADBAB1"));
-        remoteContent.Children.Add(Text("Owner key", 12, true)); var key = new PasswordBox { Margin = new(0, 5, 0, 12) }; remoteContent.Children.Add(key);
-        remoteContent.Children.Add(Text("Copy the owner key from Hosting on the other PC.", 12, false, "#ADBAB1"));
-        remoteContent.Children.Add(Row(Button("Connect", () => _ = Run("Connecting to host…", async ct =>
+        AddHostConnectionForm();
+        var priorRunning = app?.LocalHost?.IsRunning == true;
+        var priorResult = app?.LocalHost?.Network?.Result;
+        hostingStatusTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
+        hostingStatusTimer.Tick += (_, _) =>
         {
+            if (!busy && (priorRunning != (app?.LocalHost?.IsRunning == true) || !ReferenceEquals(priorResult, app?.LocalHost?.Network?.Result))) ShowHosts(true);
+        };
+        hostingStatusTimer.Start();
+    }
+
+    private void AddHostStatusAndLinks(HostConnection host, StackPanel card)
+    {
+        var health = Text("Checking connection…", 13, false, "#ADBAB1"); card.Children.Add(health);
+        _ = CheckHostConnection(host, health);
+        card.Children.Add(Row(Button("Check connection", () => _ = CheckHostConnection(host, health), true)));
+        if (IsOwnedHost(host))
+        {
+            card.Children.Add(Text(GetSharingDescription(host), 13, false, "#ADBAB1"));
+            if (GetPublicSharingEndpoint(host) is { } internet)
+            {
+                card.Children.Add(Text("Internet address · " + internet.HostUrl, 13, true));
+                card.Children.Add(Row(Button("Copy host connection link", () =>
+                {
+                    if (GetPublicSharingEndpoint(host) is { } current) CopyHostLink(current);
+                    else Status("The host address changed. Refresh this page before copying a link.");
+                }, true)));
+            }
+            if (GetLanSharingEndpoint(host) is { } home)
+            {
+                card.Children.Add(Text("Home-network address · " + home.HostUrl, 13, true));
+                card.Children.Add(Row(Button("Copy home-network link", () =>
+                {
+                    if (GetLanSharingEndpoint(host) is { } current) CopyHostLink(current);
+                    else Status("Enable hosting before copying its host connection link.");
+                }, true)));
+            }
+            card.Children.Add(Row(Button("Copy owner key", () => CopyText(host.OwnerToken, "Owner key copied. Keep it private."), true)));
+        }
+    }
+
+    private void AddLocalHostingControls(StackPanel card, App? app)
+    {
+        var running = app?.LocalHost?.IsRunning == true;
+        card.Children.Add(Text(running ? "Hosting is running" : "Hosting is off on this PC", 14, true));
+        var error = !string.IsNullOrWhiteSpace(app?.HostingError) ? app.HostingError : app?.LocalHost?.LastError;
+        if (!string.IsNullOrWhiteSpace(error)) card.Children.Add(Text(error, 13, false, "#D8B36B"));
+        PasswordBox? recoveryKey = null;
+        if (!running && app?.LocalHost is { } controller && File.Exists(Path.Combine(controller.DataDirectory, "host.json")))
+        {
+            var recovery = new StackPanel();
+            recovery.Children.Add(Text("If the saved owner key was rejected or lost, paste this host's original owner key. It is saved only after the host accepts it.", 12, false, "#ADBAB1"));
+            recovery.Children.Add(Text("Original owner key", 12, true));
+            recoveryKey = new PasswordBox { Margin = new(0, 5, 0, 12) }; recovery.Children.Add(recoveryKey);
+            card.Children.Add(new Expander { Header = "Recover or replace owner key", Content = recovery,
+                IsExpanded = string.IsNullOrWhiteSpace(store.State.LocalHostOwnerToken) || error?.Contains("owner key", StringComparison.OrdinalIgnoreCase) == true,
+                Margin = new(0, 5, 0, 8) });
+        }
+        var enable = Button("Enable hosting", () => _ = EnableHosting(recoveryKey?.Password));
+        var retry = Button("Retry connection setup", () => _ = Run("Setting up connections…", async ct =>
+        {
+            if (Application.Current is not App current) return;
+            try { await current.RetryHostNetworkAsync(ct); }
+            finally { ShowHosts(true); }
+        }), true);
+        retry.ToolTip = "Retry Windows permission and network setup. Cancelling Windows permission keeps the current host running.";
+        var stop = Button("Disable hosting", () => _ = Run("Stopping hosting…", async _ =>
+        {
+            if (Application.Current is not App current) return;
+            await current.DisableHostingAsync(); ShowHosts(); Status("Hosting disabled. Your packs and owner key were kept.");
+        }), true);
+        var effective = app?.LocalHost?.Network?.Result;
+        if (effective != null && app?.LocalHost?.InternetAddress is { } custom) effective = effective with { PublicAddress = custom };
+        UpdateHostingActions(running, store.State.LocalHostingEnabled, effective, enable, retry, stop);
+        card.Children.Add(Row(enable, retry, stop));
+        var own = new StackPanel { Margin = new(0, 8, 0, 0) };
+        var address = Field(own, "Address and port", store.State.LocalHostAdvertisedAddress,
+            "Use a DNS, dynamic DNS, or VPN address already routed to this PC, such as https://packs.example.com:17843. Hearth includes its certificate fingerprint in the link.");
+        own.Children.Add(Row(Button("Use this address", () => _ = Run("Saving host address…", _ =>
+        {
+            var value = AppLocalHost.NormalizeAdvertisedAddress(address.Text);
+            var previous = store.State.LocalHostAdvertisedAddress;
+            store.State.LocalHostAdvertisedAddress = value;
+            try { store.Save(); } catch { store.State.LocalHostAdvertisedAddress = previous; throw; }
+            app?.LocalHost?.SetAdvertisedAddress(value); ShowHosts(); Status("Host address saved. A friend's connection will confirm it is reachable."); return Task.CompletedTask;
+        }), true), Button("Use automatic address", () => _ = Run("Restoring automatic host address…", _ =>
+        {
+            var previous = store.State.LocalHostAdvertisedAddress; store.State.LocalHostAdvertisedAddress = "";
+            try { store.Save(); } catch { store.State.LocalHostAdvertisedAddress = previous; throw; }
+            app?.LocalHost?.SetAdvertisedAddress(null); ShowHosts(); return Task.CompletedTask;
+        }), true)));
+        card.Children.Add(new Expander { Header = "Use my own address", Content = own, Margin = new(0, 8, 0, 0), IsExpanded = store.State.LocalHostAdvertisedAddress.Length > 0 });
+    }
+
+    private void RenameHost(HostConnection host)
+    {
+        var window = new Window { Title = "Rename host", Owner = this, Width = 460, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize };
+        var content = new StackPanel { Margin = new(24) }; var name = Field(content, "Host name", host.Name); name.MaxLength = 80;
+        content.Children.Add(Row(Button("Save", () =>
+        {
+            if (string.IsNullOrWhiteSpace(name.Text)) return;
+            var replacement = host with { Name = name.Text.Trim() };
+            var index = store.State.Hosts.FindIndex(x => x.Id == host.Id); if (index < 0) { window.Close(); return; }
+            store.State.Hosts[index] = replacement;
+            try { store.Save(); } catch { store.State.Hosts[index] = host; throw; }
+            if (selectedHost?.Id == host.Id) selectedHost = replacement;
+            window.Close(); ShowHosts();
+        }), Button("Cancel", window.Close, true)));
+        window.Content = content; window.ShowDialog();
+    }
+
+    private void AddHostConnectionForm()
+    {
+        var add = Card("Connect a host");
+        var form = new StackPanel { Margin = new(0, 8, 0, 0) };
+        form.Children.Add(Text("A host connection link is for managing packs as an owner. Players use a pack invite from the pack's Members tab.", 13, false, "#ADBAB1"));
+        var name = Field(form, "Host name (optional)");
+        var url = Field(form, "Host connection link", pendingHostLink);
+        form.Children.Add(Text("On the host PC, open Share packs and copy its host connection link and owner key.", 12, false, "#ADBAB1"));
+        form.Children.Add(Text("Owner key", 12, true)); var key = new PasswordBox { Margin = new(0, 5, 0, 12) }; form.Children.Add(key);
+        form.Children.Add(Row(Button("Connect", () => _ = Run("Connecting to host…", async ct =>
+        {
+            if (url.Text.Trim().StartsWith("hearth://join", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("This is a pack invite. Open Add modpack to request access to that pack.");
             var ownerKey = key.Password.Trim();
-            if (string.IsNullOrEmpty(ownerKey)) throw new InvalidOperationException("Paste the owner key from Hosting on the host PC.");
+            if (string.IsNullOrEmpty(ownerKey)) throw new InvalidOperationException("Paste the owner key from Share packs on the host PC.");
             var link = HostLink.Parse(url.Text);
-            var known = store.State.Hosts.FirstOrDefault(h => h.Url == link.HostUrl);
+            var known = store.State.Hosts.FirstOrDefault(h => h.Url == link.HostUrl)
+                ?? store.State.Hosts.FirstOrDefault(h => h.HostId == link.HostId && h.CertificatePin == link.CertificatePin && link.HostId != null && link.CertificatePin != null);
             if (known?.CertificatePin is { } savedPin && link.CertificatePin is { } offeredPin && savedPin != offeredPin)
-                throw new InvalidOperationException("This host's security identity changed. Check with its owner before forgetting the old connection and reconnecting.");
+                throw new InvalidOperationException("This host's fingerprint changed. Check with its owner before forgetting the old connection and reconnecting.");
             if (known?.HostId is { } savedId && link.HostId is { } offeredId && savedId != offeredId)
-                throw new InvalidOperationException("This link identifies a different host. Copy a fresh connection link from the host PC.");
-            // Preserve the transport trust already saved for this address before sending an owner key.
-            var pin = known != null ? known.CertificatePin : link.CertificatePin;
+                throw new InvalidOperationException("This link identifies a different host. Copy a fresh host connection link from the host PC.");
+            var pin = known?.CertificatePin ?? link.CertificatePin;
             using var api = new HearthApi(link.HostUrl, certificatePin: pin);
             var health = await api.HealthAsync(ct);
             var expectedId = known?.HostId ?? link.HostId;
-            if (expectedId != null && expectedId != health.HostId) throw new InvalidOperationException("This link reached a different host. Copy a fresh connection link from the host PC.");
+            if (expectedId != null && expectedId != health.HostId) throw new InvalidOperationException("This link reached a different host. Copy a fresh host connection link from the host PC.");
             using var owner = new HearthApi(link.HostUrl, ownerKey, certificatePin: pin);
             await owner.ListPacksAsync(ct);
-            var host = new HostConnection(Guid.NewGuid().ToString("N"), string.IsNullOrWhiteSpace(name.Text) ? health.Name : name.Text.Trim(), api.HostUrl, ownerKey, pin, health.HostId);
-            var existing = store.State.Hosts.FindIndex(h => h.OwnerToken == host.OwnerToken &&
-                (h.Url == host.Url || (host.CertificatePin != null && h.CertificatePin == host.CertificatePin && h.HostId == host.HostId)));
-            if (existing >= 0 && store.State.Hosts[existing].CertificatePin is { } oldPin && oldPin != host.CertificatePin)
-                throw new InvalidOperationException("The host's security identity changed. Check with its owner before forgetting the old connection and reconnecting.");
-            if (existing >= 0) host = host with { Id = store.State.Hosts[existing].Id };
+            if (!await owner.IsAdministratorAsync(ct))
+                throw new InvalidOperationException("This is a member credential, not the host's owner key. Use Manage as owner from that pack's library page, or copy the owner key from the host PC.");
+            var defaultName = string.IsNullOrWhiteSpace(health.Name) || health.Name.Equals("Hearth Host", StringComparison.OrdinalIgnoreCase)
+                ? new Uri(api.HostUrl).Authority : health.Name;
+            var host = new HostConnection(known?.Id ?? Guid.NewGuid().ToString("N"), string.IsNullOrWhiteSpace(name.Text) ? defaultName : name.Text.Trim(), api.HostUrl, ownerKey, pin, health.HostId);
+            var existing = store.State.Hosts.FindIndex(h => h.Id == host.Id);
             if (existing >= 0) store.State.Hosts[existing] = host; else store.State.Hosts.Add(host);
             store.Save(); pendingHostLink = ""; selectedHost = host; selectedPack = null; published = null; draft = null;
-            ShowOwnerPackList(); Status("Host connected.");
+            ShowHosts(); Status("Host connected.");
         }))));
-        add.Children.Add(new Expander { Header = "Connect an existing host", Content = remoteContent, IsExpanded = pendingHostLink.Length > 0, Margin = new(0, 3, 0, 13) });
-        var localContent = new StackPanel { Margin = new(0, 12, 0, 8) };
-        localContent.Children.Add(Text("The host shares modpack files. Your Minecraft world server stays separate.", 13, false, "#ADBAB1"));
-        localContent.Children.Add(Text("Hearth creates secure connection links and asks your router to allow friends in. Windows may ask permission to allow Hearth through its firewall.", 12, false, "#ADBAB1"));
-        var app = Application.Current as App;
-        var running = app?.LocalHost?.IsRunning == true;
-        var localStatus = Text("", 13, true); localContent.Children.Add(localStatus);
-        var localError = Text("", 12, false, "#D8B36B"); localContent.Children.Add(localError);
-        localContent.Children.Add(Text("Runs while Hearth is open or in the system tray. Quitting Hearth stops hosting. Reopening Hearth resumes it.", 12, false, "#ADBAB1"));
-        localContent.Children.Add(Text("Choose close to tray and start with Windows in Settings.", 12, false, "#ADBAB1"));
-        PasswordBox? recoveryKey = null;
-        if (app?.LocalHost is { } controller && string.IsNullOrEmpty(store.State.LocalHostConnectionId)
-            && string.IsNullOrEmpty(store.State.LocalHostOwnerToken)
-            && File.Exists(Path.Combine(controller.DataDirectory, "host.json"))
-            && !store.State.Hosts.Any(host => host.Url == controller.HostUrl))
-        {
-            localContent.Children.Add(Text("Existing pack data was found. Paste its original owner key to resume hosting.", 13, false, "#D8B36B"));
-            localContent.Children.Add(Text("Original owner key", 12, true));
-            recoveryKey = new PasswordBox { Margin = new(0, 5, 0, 12) }; localContent.Children.Add(recoveryKey);
-        }
-        var enable = Button("Enable hosting", () => _ = EnableHosting(recoveryKey?.Password));
-        var retry = Button("Retry connection setup", () => _ = Run("Setting up secure connections…", async ct =>
-        {
-            if (Application.Current is not App current) return;
-            // Repair applies only to a running host. A stopped host has one startup action.
-            if (current.LocalHost?.IsRunning != true)
-            {
-                ShowHosts(expandLocal: true); Status("Hosting is stopped. Choose Enable hosting to start it."); return;
-            }
-            try { await current.RetryHostNetworkAsync(ct); }
-            finally { ShowHosts(expandLocal: true); }
-        }), true);
-        retry.ToolTip = "Restart hosting and retry Windows firewall and router setup. Active mod downloads may need to retry.";
-        var stop = Button("Disable hosting", () => _ = Run("Stopping host…", async _ =>
-        {
-            if (Application.Current is not App current) return;
-            await current.DisableHostingAsync();
-            ShowHosts(expandLocal: true); Status("Hosting disabled. Your packs and owner key were kept.");
-        }), true);
-        localContent.Children.Add(Row(enable, retry, stop));
-        add.Children.Add(new Expander { Header = "Host on this PC", Content = localContent, IsExpanded = expandLocal || running || store.State.LocalHostingEnabled, Margin = new(0, 2, 0, 5) });
-        var previousRunning = running;
-        var previousNetwork = app?.LocalHost?.Network?.Result;
-        void RefreshLocalStatus()
-        {
-            if (!busy && !ReferenceEquals(previousNetwork, app?.LocalHost?.Network?.Result))
-            { ShowHosts(expandLocal: true); return; }
-            var currentRunning = app?.LocalHost?.IsRunning == true;
-            localStatus.Text = currentRunning ? "Hosting is running" : store.State.LocalHostingEnabled ? "Hosting is stopped — choose Enable hosting to start it" : "Hosting is off";
-            var error = !string.IsNullOrEmpty(app?.HostingError) ? app.HostingError : app?.LocalHost?.LastError;
-            localError.Text = error ?? "";
-            localError.Visibility = string.IsNullOrEmpty(error) ? Visibility.Collapsed : Visibility.Visible;
-            UpdateHostingActions(currentRunning, store.State.LocalHostingEnabled, app?.LocalHost?.Network?.Result, enable, retry, stop);
-            foreach (var card in ownedHostCards)
-            {
-                card.Manage.IsEnabled = currentRunning;
-                if (previousRunning != currentRunning) _ = CheckHostConnection(card.Host, card.Health);
-            }
-            previousRunning = currentRunning;
-        }
-        RefreshLocalStatus();
-        hostingStatusTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
-        hostingStatusTimer.Tick += (_, _) => RefreshLocalStatus();
-        hostingStatusTimer.Start();
+        add.Children.Add(new Expander { Header = "Connect an existing host", Content = form, IsExpanded = pendingHostLink.Length > 0 });
     }
 
     internal static void UpdateHostingActions(bool running, bool enabled, HostNetworkResult? network, Button enable, Button retry, Button stop)
@@ -233,7 +274,7 @@ public partial class MainWindow
     {
         if (IsOwnedHost(host) && (Application.Current as App)?.LocalHost?.IsRunning != true)
         {
-            label.Text = store.State.LocalHostingEnabled ? "Hosting is stopped. Choose Enable hosting under Host on this PC." : "Hosting is off. Enable it below to manage and share packs.";
+            label.Text = "Hosting is off on this PC. Choose Enable hosting to manage and share packs.";
             return;
         }
         label.Text = "Checking connection…";
@@ -248,6 +289,11 @@ public partial class MainWindow
             using var response = await http.SendAsync(request);
             if (response.IsSuccessStatusCode)
             {
+                if (!IsOwnedHost(host))
+                {
+                    try { CacheHostEndpoints(host, await api.EndpointsAsync()); }
+                    catch (HostApiException error) when (error.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Forbidden) { remoteHostEndpoints.Remove(host.Id); }
+                }
                 using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync()); var data = json.RootElement;
                 if (data.TryGetProperty("lastInternetPlayerAccessAt", out var outside) && outside.ValueKind == JsonValueKind.String)
                     text += $"\nLast confirmed outside connection: {data.GetProperty("lastInternetPlayerName").GetString()} · {outside.GetDateTimeOffset().LocalDateTime:g}";
@@ -256,11 +302,12 @@ public partial class MainWindow
                     text += $"\nLast player request: {data.GetProperty("lastPlayerName").GetString()} · {last.GetDateTimeOffset().LocalDateTime:g}";
                 else text += "\nNo approved player requests since the host started.";
             }
-            else if (response.StatusCode is HttpStatusCode.Unauthorized) text += "\nReconnect with a valid owner key.";
+            else if (!host.IsDelegated && response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                text += "\nThe saved owner key was rejected. Connect again with the host's original owner key.";
             label.Text = IsOwnedHost(host) && (Application.Current as App)?.LocalHost?.IsRunning != true
-                ? "Hosting is stopped. Choose Enable hosting under Host on this PC." : text;
+                ? "Hosting is off on this PC. Choose Enable hosting." : text;
         }
-        catch (Exception ex) { label.Text = "Could not reach this host. Check its connection and try again."; label.ToolTip = ex.Message; }
+        catch (Exception ex) { label.Text = $"Can't reach {host.Name}. Check its connection and try again."; label.ToolTip = ex.Message; }
     }
     private string InstallDirectory => AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
     private async Task EnableHosting(string? recoveryKey = null) => await Run("Starting hosting…", async ct =>
@@ -268,17 +315,9 @@ public partial class MainWindow
         if (Application.Current is not App app) throw new InvalidOperationException("Open Hearth to enable hosting.");
         try
         {
-            if (recoveryKey != null)
-            {
-                if (recoveryKey.Trim().Length is < 32 or > 512) throw new InvalidOperationException("Paste the original owner key before enabling hosting.");
-                var previousKey = store.State.LocalHostOwnerToken;
-                store.State.LocalHostOwnerToken = recoveryKey.Trim();
-                try { store.Save(); }
-                catch { store.State.LocalHostOwnerToken = previousKey; throw; }
-            }
-            var local = await app.EnableHostingAsync(ct);
+            var local = await app.EnableHostingAsync(ct, recoveryKey: string.IsNullOrWhiteSpace(recoveryKey) ? null : recoveryKey.Trim());
             selectedHost = local; selectedPack = null; draft = null; published = null;
-            Status("Hosting is running while Hearth is open or in the tray. Open Manage packs to create a pack.");
+            Status("Hosting is running. Create a pack below to share with friends.");
         }
         finally { ShowHosts(expandLocal: true); }
     });
@@ -290,6 +329,7 @@ public partial class MainWindow
             try
             {
                 await app.EnableHostingAsync(ct, interactive: false);
+                RefreshAfterHostChange();
                 Status("Hosting is running while Hearth is open or in the tray.");
             }
             catch (Exception exception)
@@ -303,7 +343,7 @@ public partial class MainWindow
                 Activate();
                 Status("Hosting did not start. " + exception.Message);
             }
-        });
+        }, allowNavigation: true);
     }
     public void ShowHostingStartupIssue(string message)
     {

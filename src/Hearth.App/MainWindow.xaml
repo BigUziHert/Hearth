@@ -23,21 +23,17 @@
                             <StackPanel Orientation="Horizontal" Margin="12,12,0,24"><ContentControl x:Name="BrandIcon" Width="30" Height="32" Margin="0,0,10,0"/><StackPanel><TextBlock Text="Hearth" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Modpack Launcher" FontSize="11" Foreground="#A2ADA7"/></StackPanel></StackPanel>
                             <Button x:Name="LibraryNav" Click="Library_Click" Background="Transparent" BorderThickness="0" Margin="0,0,0,7" Padding="12,11" HorizontalContentAlignment="Stretch" FontSize="15"/>
                         </StackPanel>
-                        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-                            <StackPanel>
-                                <StackPanel x:Name="PackSidebar" Margin="0,0,0,20"/>
-                                <Button x:Name="AddPackNav" Click="AddPack_Click" Background="Transparent" BorderThickness="0" Padding="12,12" Margin="0,0,0,6" HorizontalContentAlignment="Left" FontSize="15"/>
-                                <Border Height="1" Background="#343C3D" Margin="12,14,12,12"/>
-                                <Button x:Name="PublishNav" Click="Publish_Click" Background="Transparent" BorderThickness="0" Padding="12,12" Margin="0,0,0,6" HorizontalContentAlignment="Left" FontSize="15"/>
-                                <Button x:Name="HostsNav" Click="Hosts_Click" Background="Transparent" BorderThickness="0" Padding="12,12" Margin="0,0,0,6" HorizontalContentAlignment="Left" FontSize="15"/>
-                            </StackPanel>
-                        </ScrollViewer>
-                        <Button Grid.Row="2" x:Name="SettingsNav" Click="Settings_Click" Background="Transparent" BorderThickness="0" Padding="12,12" Margin="0,4,0,0" HorizontalContentAlignment="Left" FontSize="15"/>
+                        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="PackSidebar" Margin="0,0,0,20"/></ScrollViewer>
+                        <StackPanel Grid.Row="2">
+                            <Button x:Name="AddPackNav" Click="AddPack_Click" Background="Transparent" BorderThickness="0" Padding="12,12" Margin="0,0,0,6" HorizontalContentAlignment="Left" FontSize="15"/>
+                            <Button x:Name="PublishNav" Click="Publish_Click" Background="Transparent" BorderThickness="0" Padding="12,12" Margin="0,0,0,6" HorizontalContentAlignment="Left" FontSize="15"/>
+                            <Button x:Name="SettingsNav" Click="Settings_Click" Background="Transparent" BorderThickness="0" Padding="12,12" Margin="0,4,0,0" HorizontalContentAlignment="Left" FontSize="15"/>
+                        </StackPanel>
                     </Grid>
                 </Border>
                 <Grid x:Name="MainContent" Grid.Column="1">
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <Border x:Name="PageHeader" BorderBrush="#373F40" BorderThickness="0,0,0,1" Padding="28,23,28,20"><DockPanel><StackPanel x:Name="PageActions" DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center"/><TextBlock Visibility="Collapsed" x:Name="ProfileLabel" DockPanel.Dock="Right"/><StackPanel VerticalAlignment="Center"><TextBlock Visibility="Collapsed" x:Name="PageEyebrow"/><TextBlock x:Name="PageTitle" FontSize="27" FontWeight="SemiBold" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="0,0,14,0"/></StackPanel></DockPanel></Border>
+                    <Border x:Name="PageHeader" BorderBrush="#373F40" BorderThickness="0,0,0,1" Padding="28,23,28,20"><DockPanel><StackPanel x:Name="PageActions" DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center"/><StackPanel VerticalAlignment="Center"><TextBlock x:Name="PageTitle" FontSize="27" FontWeight="SemiBold" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="0,0,14,0"/></StackPanel></DockPanel></Border>
                     <ScrollViewer x:Name="PageScroller" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="Page" Margin="28,23,28,30"/></ScrollViewer>
                     <Grid x:Name="LibraryView" Grid.RowSpan="2">
                         <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -59,7 +55,8 @@
                                 <Border Grid.Column="1" BorderBrush="#697372" BorderThickness="1" CornerRadius="7" Padding="2" Background="#292F31"><StackPanel x:Name="TerrainSelector" Orientation="Horizontal"><RadioButton x:Name="TerrainOff" Content="Off" Width="76" GroupName="Terrain" Style="{StaticResource TerrainOption}"/><RadioButton x:Name="TerrainVoxy" Content="Voxy" Width="84" GroupName="Terrain" Style="{StaticResource TerrainOption}"/><RadioButton x:Name="TerrainDh" Content="Distant Horizons" Width="156" GroupName="Terrain" Style="{StaticResource TerrainOption}"/></StackPanel></Border>
                             </Grid>
                         </Border>
-                        <Border x:Name="PrismNotice" Grid.Row="3" Background="#293323" BorderBrush="#47533C" BorderThickness="1,0,0,0" Padding="16,10" Margin="16,0,16,15"><DockPanel><Button DockPanel.Dock="Right" Content="Set up Prism" Click="SetupPrism_Click" Background="#3F5830" BorderBrush="#67874B" Padding="13,7" Margin="14,0,0,0"/><StackPanel VerticalAlignment="Center"><TextBlock Text="Minecraft setup" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="Install Prism, then sign in with your own Microsoft account." Foreground="#B6C2B0" FontSize="12" Margin="0,3,0,0"/></StackPanel></DockPanel></Border>
+                        <StackPanel Grid.Row="3" x:Name="LibraryDetails" Margin="16,0,16,15"/>
+
                     </Grid>
                 </Grid>
             </Grid>

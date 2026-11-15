@@ -1,1 +1,1 @@
-<Project><PropertyGroup><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><Version>1.0.14</Version><Authors>Hearth contributors</Authors><Product>Hearth</Product><Deterministic>true</Deterministic></PropertyGroup></Project>
+<Project><PropertyGroup><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><Version>1.1.0</Version><Authors>Hearth contributors</Authors><Product>Hearth</Product><Deterministic>true</Deterministic></PropertyGroup></Project>

@@ -125,43 +125,23 @@ public sealed class PrismService(string profileRoot, string? instanceDirectory =
         File.WriteAllText(config + ".hearth.tmp", updated);
         File.Move(config + ".hearth.tmp", config, true);
     }
-    public static void EnsureNotRunning(string instanceDirectory, string? prismDataDirectory = null)
+    public static void EnsureNotRunning(string instanceDirectory, string? prismDataDirectory = null, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsWindows()) return;
         var hasCandidates = false;
         foreach (var process in Process.GetProcesses())
         {
             using (process)
             {
+                ct.ThrowIfCancellationRequested();
                 try { hasCandidates |= process.ProcessName.Equals("prismlauncher", StringComparison.OrdinalIgnoreCase) || process.ProcessName.Equals("java", StringComparison.OrdinalIgnoreCase) || process.ProcessName.Equals("javaw", StringComparison.OrdinalIgnoreCase); }
                 catch { /* A process can exit between enumeration and inspection. */ }
             }
         }
         if (!hasCandidates) return;
-        // Query command lines so an unrelated Minecraft server can keep running on the same PC.
-        // No user values enter the command. Instance matching happens after JSON parsing.
-        var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        start.ArgumentList.Add("-NoProfile"); start.ArgumentList.Add("-NonInteractive"); start.ArgumentList.Add("-Command");
-        start.ArgumentList.Add("Get-CimInstance Win32_Process -Filter \"Name='prismlauncher.exe' OR Name='java.exe' OR Name='javaw.exe'\" | Select-Object Name,CommandLine | ConvertTo-Json -Compress");
-        using var query = Process.Start(start) ?? throw new IOException("Could not check running Minecraft instances.");
-        var outputTask = query.StandardOutput.ReadToEndAsync();
-        var errorTask = query.StandardError.ReadToEndAsync();
-        if (!query.WaitForExit(15000)) { try { query.Kill(); } catch { } throw new IOException("Could not verify whether Minecraft is running. Close Minecraft and the Hearth Prism window, then try again."); }
-        if (query.ExitCode != 0) throw new IOException("Could not verify whether Minecraft is running. Close Minecraft and the Hearth Prism window, then try again.");
-        var output = outputTask.GetAwaiter().GetResult();
-        _ = errorTask.GetAwaiter().GetResult();
-        if (string.IsNullOrWhiteSpace(output)) return;
-        using var data = JsonDocument.Parse(output);
-        var rows = data.RootElement.ValueKind == JsonValueKind.Array ? data.RootElement.EnumerateArray().ToArray() : [data.RootElement];
-        foreach (var row in rows)
-        {
-            var name = row.GetProperty("Name").GetString() ?? "";
-            var command = row.GetProperty("CommandLine").GetString();
-            // A service or another Windows user's Java process may not expose its command line.
-            // Those processes cannot normally access this user's private Hearth profile. Do not
-            // block an unrelated always-on Minecraft server merely because it is protected.
+        foreach (var (name, command) in ProcessCommandLines.ReadAsync(ct).GetAwaiter().GetResult())
             if (IsInstanceProcess(name, command, instanceDirectory, prismDataDirectory)) throw new IOException("Close Minecraft and the Hearth Prism window before updating packs or changing their folder. Then try again.");
-        }
     }
     public static bool IsInstanceProcess(string processName, string? commandLine, string instanceDirectory, string? prismDataDirectory = null)
     {

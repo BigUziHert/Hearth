@@ -5,6 +5,7 @@ using System.Net.Security;
 using System.Runtime.CompilerServices;
 using System.Security.Authentication;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
 namespace Hearth.Core;
@@ -19,6 +20,7 @@ public sealed class HearthApi : IDisposable
     private readonly HttpClient _client;
     private readonly bool _ownsClient;
     private readonly string? _token;
+    private readonly string _hostName;
     private sealed record ClientTrust(string? Pin);
     private sealed class HostIdentityException(string message) : AuthenticationException(message);
     private sealed class HttpsOnlyHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
@@ -38,9 +40,10 @@ public sealed class HearthApi : IDisposable
     }
     private static readonly ConditionalWeakTable<HttpClient, ClientTrust> TrustedClients = new();
     public string HostUrl { get; }
-    public HearthApi(string hostUrl, string? token = null, HttpClient? client = null, string? certificatePin = null)
+    public HearthApi(string hostUrl, string? token = null, HttpClient? client = null, string? certificatePin = null, string? hostName = null)
     {
         HostUrl = NormalizeHost(hostUrl);
+        _hostName = string.IsNullOrWhiteSpace(hostName) ? new Uri(HostUrl).Authority : hostName;
         var pin = certificatePin is null ? null : HostCertificate.NormalizePin(certificatePin);
         if (pin is not null && !HostUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("A host certificate identity requires HTTPS. Reconnect using the owner's current host connection link.");
@@ -54,17 +57,17 @@ public sealed class HearthApi : IDisposable
     public static HttpClient CreateClient(string? certificatePin = null, TimeSpan? timeout = null)
     {
         var pin = certificatePin is null ? null : HostCertificate.NormalizePin(certificatePin);
-        var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        var handler = new SocketsHttpHandler { AllowAutoRedirect = false, ConnectTimeout = TimeSpan.FromSeconds(8) };
         if (pin is not null)
         {
             var expected = Convert.FromHexString(pin);
-            handler.ServerCertificateCustomValidationCallback = (request, certificate, _, errors) =>
+            handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, errors) =>
             {
-                if (request.RequestUri?.Scheme != "https" || certificate is null || (errors & SslPolicyErrors.RemoteCertificateNotAvailable) != 0)
+                if (certificate is not X509Certificate2 hostCertificate || (errors & SslPolicyErrors.RemoteCertificateNotAvailable) != 0)
                     throw new HostIdentityException("The host did not provide its HTTPS certificate. No access credentials were sent.");
                 if (!CryptographicOperations.FixedTimeEquals(expected, certificate.GetCertHash(HashAlgorithmName.SHA256)))
                     throw new HostIdentityException("The host certificate identity changed or does not match this invite. Ask the owner for a fresh link. No access credentials were sent.");
-                if (certificate.NotBefore.ToUniversalTime() > DateTime.UtcNow || certificate.NotAfter.ToUniversalTime() <= DateTime.UtcNow)
+                if (hostCertificate.NotBefore.ToUniversalTime() > DateTime.UtcNow || hostCertificate.NotAfter.ToUniversalTime() <= DateTime.UtcNow)
                     throw new HostIdentityException("The host certificate is expired or not yet valid. Check the host and player PC clocks. No access credentials were sent.");
                 // The invite's exact certificate is the trust anchor; DNS names and public CA trust are not needed.
                 return true;
@@ -90,12 +93,32 @@ public sealed class HearthApi : IDisposable
     private static string Id(string value) => Uri.EscapeDataString(value);
     private async Task<T> Send<T>(HttpMethod method, string route, object? payload, CancellationToken ct)
     {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(route.EndsWith("/releases", StringComparison.Ordinal) ? TimeSpan.FromMinutes(15) : TimeSpan.FromSeconds(20));
         using var request = Request(method, route, payload is null ? null : JsonContent.Create(payload, options: JsonDefaults.Options));
-        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        await EnsureSuccess(response, ct);
-        if (response.Content.Headers.ContentLength > 8 * 1024 * 1024) throw new IOException("The host returned too much metadata.");
-        var bytes = await ReadLimited(response.Content, 8 * 1024 * 1024, ct);
-        return JsonSerializer.Deserialize<T>(bytes, JsonDefaults.Options) ?? throw new IOException("The host returned an empty response.");
+        try
+        {
+            using var response = await SendRequest(request, timeout.Token, ct).ConfigureAwait(false);
+            await EnsureSuccess(response, timeout.Token).ConfigureAwait(false);
+            if (response.Content.Headers.ContentLength > 8 * 1024 * 1024) throw new IOException("The host returned too much metadata.");
+            var bytes = await ReadLimited(response.Content, 8 * 1024 * 1024, timeout.Token).ConfigureAwait(false);
+            return JsonSerializer.Deserialize<T>(bytes, JsonDefaults.Options) ?? throw new IOException("The host returned an empty response.");
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        { throw new HttpRequestException($"Can't reach {_hostName}. Check that its host is running and try again.", ex); }
+    }
+    private async Task<HttpResponseMessage> SendRequest(HttpRequestMessage request, CancellationToken ct, CancellationToken userCancellation)
+    {
+        try { return await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false); }
+        catch (HttpRequestException exception)
+        {
+            // Certificate failures need their identity-specific explanation, never an offline-host message.
+            for (Exception? cause = exception; cause is not null; cause = cause.InnerException)
+                if (cause is AuthenticationException) throw;
+            throw new HttpRequestException($"Can't reach {_hostName}. Check that its host is running and try again.", exception, exception.StatusCode);
+        }
+        catch (OperationCanceledException exception) when (!userCancellation.IsCancellationRequested)
+        { throw new HttpRequestException($"Can't reach {_hostName}. The connection timed out; try again.", exception); }
     }
     private static async Task<byte[]> ReadLimited(HttpContent content, int limit, CancellationToken ct)
     {
@@ -121,12 +144,14 @@ public sealed class HearthApi : IDisposable
             if (json.RootElement.TryGetProperty("error", out var error)) detail = error.GetString() ?? "";
             else if (json.RootElement.TryGetProperty("detail", out var d)) detail = d.GetString() ?? "";
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { /* Never expose an HTML response or credentials in errors. */ }
         var message = response.StatusCode switch
         {
             HttpStatusCode.Unauthorized => "This host did not accept your access key. Reconnect or request access again.",
             HttpStatusCode.Forbidden => "You do not have access to this pack. Ask its owner to approve you.",
             HttpStatusCode.NotFound => "The pack or release is not available on this host.",
+            HttpStatusCode.Gone => "This pack was archived by its owner.",
             HttpStatusCode.Conflict => "This pack changed since you opened it. Refresh before publishing again.",
             (HttpStatusCode)429 => "Too many requests. Wait a moment, then retry.",
             _ => "The host could not complete the request (" + (int)response.StatusCode + ")."
@@ -135,12 +160,26 @@ public sealed class HearthApi : IDisposable
     }
     public Task<HealthResponse> HealthAsync(CancellationToken ct = default) => Send<HealthResponse>(HttpMethod.Get, "/health", null, ct);
     public Task<List<PackSummary>> ListPacksAsync(CancellationToken ct = default) => Send<List<PackSummary>>(HttpMethod.Get, "/owner/packs", null, ct);
+    public async Task<bool> IsAdministratorAsync(CancellationToken ct = default)
+    {
+        try { await Send<JsonElement>(HttpMethod.Get, "/owner/status", null, ct).ConfigureAwait(false); return true; }
+        catch (HostApiException exception) when (exception.StatusCode == HttpStatusCode.Forbidden) { return false; }
+    }
+    public Task<HostEndpoints> EndpointsAsync(CancellationToken ct = default) => Send<HostEndpoints>(HttpMethod.Get, "/owner/endpoints", null, ct);
     public Task<PackSummary> CreatePackAsync(CreatePackRequest request, CancellationToken ct = default) => Send<PackSummary>(HttpMethod.Post, "/owner/packs", request, ct);
     public Task<JoinResponse> JoinAsync(string packId, JoinRequest request, CancellationToken ct = default) => Send<JoinResponse>(HttpMethod.Post, $"/packs/{Id(packId)}/join", request, ct);
     public Task<AccessResponse> AccessAsync(string packId, CancellationToken ct = default) => Send<AccessResponse>(HttpMethod.Get, $"/packs/{Id(packId)}/access", null, ct);
     public Task<List<MemberInfo>> MembersAsync(string packId, CancellationToken ct = default) => Send<List<MemberInfo>>(HttpMethod.Get, $"/packs/{Id(packId)}/members", null, ct);
     public Task<MemberInfo> UpdateMemberAsync(string packId, string memberId, MemberUpdate request, CancellationToken ct = default) => Send<MemberInfo>(HttpMethod.Patch, $"/packs/{Id(packId)}/members/{Id(memberId)}", request, ct);
+    public Task<PackSummary> RotateInviteAsync(string packId, CancellationToken ct = default) => Send<PackSummary>(HttpMethod.Delete, $"/packs/{Id(packId)}/invite", null, ct);
+    public Task<PackSummary> SetSharedInviteAsync(string packId, bool enabled, CancellationToken ct = default) => Send<PackSummary>(HttpMethod.Patch, $"/packs/{Id(packId)}/invite", new SharedInviteUpdate(enabled), ct);
+    public Task<List<PersonalInviteInfo>> PersonalInvitesAsync(string packId, CancellationToken ct = default) => Send<List<PersonalInviteInfo>>(HttpMethod.Get, $"/packs/{Id(packId)}/invites", null, ct);
+    public Task<PersonalInviteInfo> CreatePersonalInviteAsync(string packId, CreatePersonalInviteRequest request, CancellationToken ct = default) => Send<PersonalInviteInfo>(HttpMethod.Post, $"/packs/{Id(packId)}/invites", request, ct);
+    public Task<PersonalInviteInfo> RevokePersonalInviteAsync(string packId, string inviteId, CancellationToken ct = default) => Send<PersonalInviteInfo>(HttpMethod.Delete, $"/packs/{Id(packId)}/invites/{Id(inviteId)}", null, ct);
+    public Task<DeclineAllResult> DeclineAllAsync(string packId, CancellationToken ct = default) => Send<DeclineAllResult>(HttpMethod.Post, $"/packs/{Id(packId)}/members/decline-all", null, ct);
+    public Task<ArchivePackResponse> ArchivePackAsync(string packId, CancellationToken ct = default) => Send<ArchivePackResponse>(HttpMethod.Post, $"/packs/{Id(packId)}/archive", null, ct);
     public Task<PackManifest> ManifestAsync(string packId, CancellationToken ct = default) => Send<PackManifest>(HttpMethod.Get, $"/packs/{Id(packId)}/manifest", null, ct);
+    public Task<PackManifest> ReleaseManifestAsync(string packId, string releaseId, CancellationToken ct = default) => Send<PackManifest>(HttpMethod.Get, $"/packs/{Id(packId)}/releases/{Id(releaseId)}/manifest", null, ct);
     public Task<PackManifest> PublishAsync(string packId, PublishRequest request, CancellationToken ct = default) => Send<PackManifest>(HttpMethod.Post, $"/packs/{Id(packId)}/releases", request, ct);
     public async Task UploadAsync(string packId, string localPath, PackFile file, IProgress<SyncProgress>? progress = null, CancellationToken ct = default)
     {
@@ -150,14 +189,14 @@ public sealed class HearthApi : IDisposable
         using var request = Request(HttpMethod.Put, $"/packs/{Id(packId)}/blobs/{Id(file.Sha256)}", new StreamContent(input));
         request.Content!.Headers.ContentType = new MediaTypeHeaderValue("application/java-archive");
         progress?.Report(new("Uploading " + file.Path, 0, file.Size));
-        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var response = await SendRequest(request, ct, ct).ConfigureAwait(false);
         await EnsureSuccess(response, ct);
         progress?.Report(new("Uploaded " + file.Path, file.Size, file.Size));
     }
     public async Task DownloadAsync(string packId, PackFile file, string destination, IProgress<SyncProgress>? progress, CancellationToken ct)
     {
         using var request = Request(HttpMethod.Get, $"/packs/{Id(packId)}/blobs/{Id(file.Sha256)}");
-        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var response = await SendRequest(request, ct, ct).ConfigureAwait(false);
         await EnsureSuccess(response, ct);
         if (response.Content.Headers.ContentLength is long length && length != file.Size) throw new IOException("The download size does not match the published release.");
         await using var input = await response.Content.ReadAsStreamAsync(ct);

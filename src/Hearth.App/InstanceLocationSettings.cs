@@ -37,17 +37,17 @@ public partial class MainWindow
         void CheckRunning()
         {
             // Match the whole instance library, plus Prism's unchanged account/data directory.
-            PrismService.EnsureNotRunning(source, prism.PrismDataDirectory);
-            PrismService.EnsureNotRunning(destination, prism.PrismDataDirectory);
+            PrismService.EnsureNotRunning(source, prism.PrismDataDirectory, ct);
+            PrismService.EnsureNotRunning(destination, prism.PrismDataDirectory, ct);
         }
-        await InstanceStorage.MoveAsync(store.Root, source, destination, target =>
+        await InstanceStorage.MoveAsync(store.Root, source, destination, target => Dispatcher.Invoke(() =>
         {
             store.State.InstanceDirectory = target;
             store.State.PreviousInstanceDirectory = Directory.Exists(source) ? source : "";
             try { store.Save(); }
             catch { store.State.InstanceDirectory = oldPreference; store.State.PreviousInstanceDirectory = oldBackup; throw; }
             sync = new(store.Root, target); prism = new(store.Root, target);
-        }, CheckRunning, new Progress<SyncProgress>(p => Status(p.TotalBytes > 0 ? $"{p.Message} {p.Percent:0}%" : p.Message)), ct);
+        }), CheckRunning, new Progress<SyncProgress>(p => Status(p.TotalBytes > 0 ? $"{p.Message} {p.Percent:0}%" : p.Message)), ct);
         ShowSettings();
         Status("Instance location saved. Your packs will use this folder the next time you press Play.");
     });

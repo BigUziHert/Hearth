@@ -66,8 +66,8 @@ internal static class ClientIdentityChecks
             var until = DateTime.UtcNow.AddSeconds(8);
             while (status.Text == "Checking access" && DateTime.UtcNow < until) await Task.Delay(20);
             check(status.Text == "Ready to play", "The actual library status client validates the pinned host and finds the preserved installed release");
-            var method = typeof(MainWindow).GetMethod("IsHostAdministrator", BindingFlags.NonPublic | BindingFlags.Static)!;
-            var admin = (Task<bool>)method.Invoke(null, [new HostConnection("test-owner", "Identity host", moved.Url, reloaded.Token, pin, IdentityFixture.Identity), CancellationToken.None])!;
+            var method = typeof(MainWindow).GetMethod("IsHostAdministrator", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var admin = (Task<bool>)method.Invoke(window, [new HostConnection("test-owner", "Identity host", moved.Url, reloaded.Token, pin, IdentityFixture.Identity), CancellationToken.None])!;
             check(await admin, "The owner-permission check also uses the pinned HTTPS client");
         }
         finally { window.Close(); }
@@ -91,6 +91,26 @@ internal static class ClientIdentityChecks
             "A different certificate claiming the same host ID cannot obtain the existing player credential or reuse its installation");
         check(sync.GetInstanceId(unrelatedResult.Pack.InstallationUrl, unrelatedResult.Pack.PackId) != installed.InstanceId,
             "Unrelated hosts remain separate even if they claim matching host and pack identifiers");
+
+        var siblingPack = new JoinedPack(moved.Url, "another-pack", "Another pack", "different-pack-credential", "different-member", CertificatePin: pin, HostId: IdentityFixture.Identity);
+        profile.State.Packs.Add(siblingPack);
+        profile.State.Hosts.Add(new("managed-host", "Managed host", moved.Url, "owner-credential", pin, IdentityFixture.Identity));
+        profile.State.SelectedPackHost = moved.Url; profile.State.SelectedPackId = siblingPack.PackId;
+        await PackJoining.JoinAsync(profile, invite, "Friend");
+        var migratedSibling = profile.State.Packs.Single(p => p.PackId == siblingPack.PackId);
+        check(migratedSibling.HostUrl == first.Url && migratedSibling.InstallationUrl == moved.Url && migratedSibling.Token == siblingPack.Token
+            && profile.State.Hosts.Single().Url == first.Url && profile.State.SelectedPackHost == first.Url
+            && profile.State.Packs.Single(p => p.CertificatePin == unrelatedResult.Pack.CertificatePin).HostUrl == unrelated.Url,
+            "A verified moved address updates all same-host packs and owner connections while retaining their instance locations and isolating other certificates");
+
+        var removed = profile.State.Packs.Single(p => p.PackId == pack.PackId && p.CertificatePin == pin);
+        profile.State.Packs.Remove(removed); profile.Save();
+        using var rejoinEndpoint = new IdentityFixture(certificate);
+        var rejoined = await PackJoining.JoinAsync(profile, invite with { HostUrl = rejoinEndpoint.Url }, "Friend");
+        check(!rejoined.Reused && rejoinEndpoint.JoinRequests == 1 && rejoined.Pack.InstallationUrl == first.Url
+            && sync.GetInstanceDirectory(rejoined.Pack.InstallationUrl, rejoined.Pack.PackId) == installed.InstanceDirectory
+            && File.ReadAllText(options) == "key_key.forward:87" && File.ReadAllText(world) == "personal world",
+            "Removing and rejoining through a new address discovers the existing verified instance and keeps worlds and settings");
 
         var localProfile = new ProfileStore(Path.Combine(root, "local-owner-profile"));
         // Use only our fixture's endpoint, never the normal user's host port.

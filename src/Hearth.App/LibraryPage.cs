@@ -39,7 +39,7 @@ public partial class MainWindow
         {
             var content = new DockPanel { LastChildFill = true };
             var icon = PackArtwork.Create(index++, 35); icon.Margin = new(0, 0, 12, 0); DockPanel.SetDock(icon, Dock.Left); content.Children.Add(icon);
-            content.Children.Add(new TextBlock { Text = pack.Name, FontSize = 16, TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center });
+            content.Children.Add(new TextBlock { Text = pack.Name + (OwnerPendingCount(pack) > 0 ? $" · {OwnerPendingCount(pack)} pending" : ""), FontSize = 16, TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center });
             var selected = activePage == "library" && IsSelected(pack);
             var button = new Button { Content = content, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new(13, 8, 12, 8), Margin = new(3, 0, 3, 3), BorderThickness = new(0), Background = Color(selected ? "#3D5E27" : "#1B2022"), Foreground = Color("#F3F5F3"), ToolTip = pack.Name + " · " + new Uri(pack.HostUrl).Authority };
             System.Windows.Automation.AutomationProperties.SetName(button, pack.Name);
@@ -59,8 +59,8 @@ public partial class MainWindow
         }
         PageStart("library", "Modpacks", ""); var pack = CurrentPack;
         selectedStatusManifest = null;
-        PrismNotice.Visibility = Visibility.Collapsed;
-        PackOptionsButton.IsEnabled = pack != null; PackOptionsButton.Visibility = pack == null ? Visibility.Collapsed : Visibility.Visible;
+        LibraryDetails.Children.Clear();
+        PackOptionsButton.IsEnabled = pack != null && !busy; PackOptionsButton.Visibility = pack == null ? Visibility.Collapsed : Visibility.Visible;
         TerrainPanel.Visibility = pack == null ? Visibility.Collapsed : Visibility.Visible;
         PlayPanel.Margin = new Thickness(16, 16, 16, pack == null ? 16 : 0);
         TerrainSelector.IsEnabled = false;
@@ -86,7 +86,7 @@ public partial class MainWindow
         primaryPackAction = action; primaryPackKey = pack == null ? "" : PackKey(pack);
         PlayButton.Content = action is PackPrimaryAction.Play or PackPrimaryAction.PlayInstalled ? IconLabel(label, "M4,2 L17,10 4,18 Z") : label;
         PlayButton.FontSize = action == PackPrimaryAction.Play ? 22 : 17;
-        PlayButton.IsEnabled = enabled;
+        PlayButton.IsEnabled = enabled && !busy;
         System.Windows.Automation.AutomationProperties.SetName(PlayButton, label);
     }
     private void SetPackStatus(string message, string color, string? hint = null)
@@ -99,24 +99,26 @@ public partial class MainWindow
         if (!IsCurrentPack(pack)) return;
         selectedStatusManifest = manifest;
         var installed = LocalInstallation(pack);
+        ShowReleaseNotes(manifest, installed != null && installed.ReleaseId != manifest.ReleaseId);
         HeroSubtitle.Text = $"Minecraft {manifest.MinecraftVersion}  ·  {manifest.Loader} {manifest.LoaderVersion}  ·  {new Uri(pack.HostUrl).Authority}";
-        TerrainSelector.IsEnabled = TerrainOff.IsEnabled = true;
+        TerrainOff.IsEnabled = true; TerrainSelector.IsEnabled = !busy;
         TerrainVoxy.IsEnabled = manifest.Files.Any(file => file.Group == "voxy"); TerrainDh.IsEnabled = manifest.Files.Any(file => file.Group == "distanthorizons");
         TerrainVoxy.ToolTip = TerrainVoxy.IsEnabled ? "Voxy and its dependencies, supplied by the owner." : "The owner hasn't offered Voxy for this release.";
         TerrainDh.ToolTip = TerrainDh.IsEnabled ? "Distant Horizons and its dependencies, supplied by the owner." : "The owner hasn't offered Distant Horizons for this release.";
         if (AvailablePrismExe() == null)
         {
-            PrismNotice.Visibility = Visibility.Collapsed;
+            LibraryDetails.Children.Clear();
             SetPackStatus("Minecraft setup needed", "#D8B36B", "Install Prism, then sign in with your Microsoft account.");
             SetPrimaryAction(pack, PackPrimaryAction.SetUpPrism, "Set up Prism"); return;
         }
-        PrismNotice.Visibility = Visibility.Collapsed;
         if ((pack.Terrain == TerrainMode.Voxy && !TerrainVoxy.IsEnabled) || (pack.Terrain == TerrainMode.DistantHorizons && !TerrainDh.IsEnabled))
         {
             SetPackStatus("Choose a terrain option", "#D8B36B", "Your saved option is unavailable. Choose Off or an available option below.");
-            SetPrimaryAction(pack, PackPrimaryAction.ChooseTerrain, "Choose terrain"); return;
+            TerrainPanel.BorderBrush = Color("#D8B36B"); TerrainOff.Focus(); SetPrimaryAction(pack, PackPrimaryAction.ChooseTerrain, "Play", false); return;
         }
-        SetPrimaryAction(pack, PackPrimaryAction.Play, "Play");
+        TerrainPanel.BorderBrush = Color("#444C4D");
+        SetPrimaryAction(pack, PackPrimaryAction.Play, "Play", !busy);
+        TerrainSelector.IsEnabled = !busy;
         if (installed == null) SetPackStatus("Ready to install", "#62C629", "Play downloads this pack, then opens Minecraft in Prism.");
         else if (installed.ReleaseId != manifest.ReleaseId) SetPackStatus("Update available", "#D8B36B", "Play installs the latest release before Minecraft starts.");
         else if (installed.Terrain != pack.Terrain) SetPackStatus("Terrain change ready", "#D8B36B", "Play applies your choice before Minecraft starts.");
@@ -128,10 +130,17 @@ public partial class MainWindow
         packStatusCancellation?.Cancel(); packStatusCancellation?.Dispose(); packStatusCancellation = new(); var ct = packStatusCancellation.Token;
         var request = ++packStatusRequest;
         bool IsCurrentRequest() => request == packStatusRequest && !ct.IsCancellationRequested && IsCurrentPack(pack);
-        selectedStatusManifest = null; TerrainSelector.IsEnabled = false; PrismNotice.Visibility = Visibility.Collapsed;
+        selectedStatusManifest = null; TerrainSelector.IsEnabled = false; LibraryDetails.Children.Clear();
         SetPrimaryAction(pack, PackPrimaryAction.Checking, "Checking…", false);
         SetPackStatus("Checking access", "#BECAA5", "Checking this pack's latest release.");
         var accessApproved = false;
+        if (LocalHostOff(pack))
+        {
+            var installed = LocalInstallation(pack);
+            SetPackStatus("Hosting is off on this PC", "#D8B36B", "Open Share packs to enable hosting." + (installed != null ? " You can also play the installed copy." : ""));
+            SetPrimaryAction(pack, installed != null && AvailablePrismExe() != null ? PackPrimaryAction.PlayInstalled : PackPrimaryAction.CheckAgain, installed != null && AvailablePrismExe() != null ? "Play installed" : "Check again");
+            return;
+        }
         try
         {
             using var http = HearthApi.CreateClient(pack.CertificatePin, TimeSpan.FromSeconds(12));
@@ -141,8 +150,10 @@ public partial class MainWindow
             knownPackRoles[PackKey(pack)] = access.Status == "approved" ? access.Role : "player";
             if (access.Status != "approved")
             {
-                if (access.Status == "pending") { SetPackStatus("Waiting for approval", "#D8B36B", "Ask the owner to approve your request, then check again."); SetPrimaryAction(pack, PackPrimaryAction.CheckApproval, "Check approval"); }
-                else { SetPackStatus("Access needs approval", "#D8B36B", "Use a current invite to send a new request."); SetPrimaryAction(pack, PackPrimaryAction.RequestAccess, "Request access"); }
+                if (access.Status == "pending") { SetPackStatus("Waiting for approval", "#D8B36B", "Send your fingerprint to the owner. Approval is checked automatically."); SetPrimaryAction(pack, PackPrimaryAction.CheckApproval, "Check approval"); ShowPendingFingerprint(pack); }
+                else if (access.Status == "archived") { SetPackStatus("This pack was archived by its owner", "#D8B36B", "Your installed files are kept on this PC."); SetPrimaryAction(pack, PackPrimaryAction.CheckAgain, "Archived", false); }
+                else if (access.Status == "removed") { SetPackStatus("You were removed from this pack", "#D8B36B", "Ask the owner for a new invite if you want to rejoin."); SetPrimaryAction(pack, PackPrimaryAction.RequestAccess, "Paste a new invite"); }
+                else { SetPackStatus("Access needs approval", "#D8B36B", "Use a current invite to send a new request."); SetPrimaryAction(pack, PackPrimaryAction.RequestAccess, "Paste a new invite"); }
                 return;
             }
             accessApproved = true;
@@ -157,12 +168,14 @@ public partial class MainWindow
             if (ex is HostApiException host && host.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
             {
                 knownPackRoles[PackKey(pack)] = "player";
-                SetPackStatus("Access needs approval", "#D8B36B", "Ask the owner for a current invite and request access again."); SetPrimaryAction(pack, PackPrimaryAction.RequestAccess, "Request access");
+                SetPackStatus("Access needs approval", "#D8B36B", "Ask the owner for a current invite and request access again."); SetPrimaryAction(pack, PackPrimaryAction.RequestAccess, "Paste a new invite");
             }
+            else if (ex is HostApiException { StatusCode: HttpStatusCode.Gone })
+            { SetPackStatus("This pack was archived by its owner", "#D8B36B", "Your installed files are kept on this PC."); SetPrimaryAction(pack, PackPrimaryAction.CheckAgain, "Archived", false); }
             else if (ex is HostApiException { StatusCode: HttpStatusCode.NotFound })
             {
                 if (accessApproved) { SetPackStatus("No release yet", "#D8B36B", "The owner needs to publish this pack before you can install it."); SetPrimaryAction(pack, PackPrimaryAction.CheckAgain, "Check again"); }
-                else { SetPackStatus("Pack not found", "#D8B36B", "Ask the owner for a current invite."); SetPrimaryAction(pack, PackPrimaryAction.RequestAccess, "Request access"); }
+                else { SetPackStatus("Pack not found", "#D8B36B", "Ask the owner for a current invite."); SetPrimaryAction(pack, PackPrimaryAction.RequestAccess, "Paste a new invite"); }
             }
             else if (LocalInstallation(pack) != null)
             {
@@ -183,6 +196,7 @@ public partial class MainWindow
     }
     private void Play_Click(object sender, RoutedEventArgs e)
     {
+        if (busy) return;
         if (CurrentPack is not { } pack) { ShowAddPack(); return; }
         if (!IsCurrentPack(pack) || primaryPackKey != PackKey(pack)) { _ = RefreshSelectedStatus(); return; }
         switch (primaryPackAction)
@@ -202,11 +216,11 @@ public partial class MainWindow
         var pack = CurrentPack; if (pack == null) return;
         var menu = new ContextMenu { PlacementTarget = PackOptionsButton, Placement = PlacementMode.Bottom };
         void Item(string name, Action action, bool enabled = true) { var item = new MenuItem { Header = name, IsEnabled = enabled }; item.Click += (_, _) => { if (IsCurrentPack(pack)) action(); }; menu.Items.Add(item); }
-        Item("Check access & updates", () => _ = RefreshSelectedStatus());
+        if (primaryPackAction is not (PackPrimaryAction.CheckAgain or PackPrimaryAction.CheckApproval)) Item("Check access & updates", () => _ = RefreshSelectedStatus());
         Item("Member details & fingerprint", () => ShowPackDetails(pack));
         if (Directory.Exists(sync.GetInstanceDirectory(pack.InstallationUrl, pack.PackId)))
             Item("Open instance folder", () => OpenFolder(sync.GetInstanceDirectory(pack.InstallationUrl, pack.PackId)));
-        if (LocalInstallation(pack) != null)
+        if (LocalInstallation(pack) != null && primaryPackAction != PackPrimaryAction.PlayInstalled)
         {
             Item("Play installed release", () => _ = PlayInstalled(pack), AvailablePrismExe() != null);
         }
@@ -220,6 +234,11 @@ public partial class MainWindow
     {
         if (MessageBox.Show(this, $"Remove {pack.Name} from your library?\n\nYour downloaded Minecraft instance, worlds, and settings will be kept on this PC. To add the pack again, paste a current invite and request access.", "Remove modpack", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         packStatusCancellation?.Cancel(); ++packStatusRequest; knownPackRoles.Remove(PackKey(pack));
+        if (pack.HostId != null && pack.CertificatePin != null)
+        {
+            store.State.RememberedInstances.RemoveAll(x => x.HostId == pack.HostId && x.PackId == pack.PackId && x.CertificatePin == pack.CertificatePin);
+            store.State.RememberedInstances.Add(new(pack.HostId, pack.PackId, pack.CertificatePin, pack.InstallationUrl));
+        }
         store.State.Packs.RemoveAll(item => item.HostUrl == pack.HostUrl && item.PackId == pack.PackId);
         if (IsSelected(pack)) { store.State.SelectedPackHost = ""; store.State.SelectedPackId = ""; }
         store.Save(); ShowLibrary(); Status("Removed from your library. The downloaded instance and personal files were kept.");
@@ -231,42 +250,50 @@ public partial class MainWindow
         panel.Children.Add(Text("Your member fingerprint", 13, true)); panel.Children.Add(new TextBox { Text = Fingerprint(pack), IsReadOnly = true, FontSize = 21, FontFamily = new("Consolas") });
         panel.Children.Add(Text("Share this fingerprint with the owner so they can approve the right request.", 13, false, "#ADBAB1"));
         panel.Children.Add(Text("Member ID: " + pack.MemberId, 11, false, "#96A49C"));
-        panel.Children.Add(Row(Button("Copy fingerprint", () => { Clipboard.SetText(Fingerprint(pack)); Status("Member fingerprint copied."); }, true), Button("Done", () => window.Close()))); window.Content = panel; window.ShowDialog();
+        panel.Children.Add(Row(Button("Copy fingerprint", () => CopyText(Fingerprint(pack), "Member fingerprint copied."), true), Button("Done", () => window.Close()))); window.Content = panel; window.ShowDialog();
     }
     private async Task PlayInstalled(JoinedPack pack) => await Run("Checking the installed release…", async ct =>
     {
-        await sync.VerifyInstalledAsync(pack.InstallationUrl, pack.PackId, ct);
+        var operationSync = sync; var operationPrism = prism; var executable = PrismExe();
+        await operationSync.VerifyInstalledAsync(pack.InstallationUrl, pack.PackId, ct);
         ct.ThrowIfCancellationRequested();
-        prism.Launch(PrismExe(), sync.GetInstanceId(pack.InstallationUrl, pack.PackId)); Status("Prism opened your previous complete release. No pack update was applied.");
-    });
-    private async Task ManageJoinedPack(JoinedPack pack) => await Run("Checking owner access…", async ct =>
+        await Task.Run(() => operationPrism.Launch(executable, operationSync.GetInstanceId(pack.InstallationUrl, pack.PackId)), ct); Status("Prism opened your previous complete release. No pack update was applied.");
+    }, allowNavigation: true);
+    private async Task ManageJoinedPack(JoinedPack pack)
     {
-        using var api = new HearthApi(pack.HostUrl, pack.Token, certificatePin: pack.CertificatePin); var owned = await api.ListPacksAsync(ct); var match = owned.FirstOrDefault(p => p.Id == pack.PackId) ?? throw new InvalidOperationException("Ask the host administrator to make you an owner of this pack first.");
-        var ownerHost = store.State.Hosts.FirstOrDefault(h => h.OwnerToken == pack.Token && (h.Url == pack.HostUrl
-            || (pack.CertificatePin is not null && h.CertificatePin is not null && pack.HostId is not null
-                && pack.CertificatePin.Equals(h.CertificatePin, StringComparison.OrdinalIgnoreCase) && pack.HostId == h.HostId)));
-        if (ownerHost == null) { ownerHost = new(Guid.NewGuid().ToString("N"), pack.Name + " · owner", pack.HostUrl, pack.Token, pack.CertificatePin, pack.HostId); store.State.Hosts.Add(ownerHost); store.Save(); }
-        else if (ownerHost.Url != pack.HostUrl)
+        HostConnectionMigration.NormalizeDelegated(store);
+        PackSummary? match = null;
+        await Run("Checking owner access…", async ct =>
         {
-            var index = store.State.Hosts.IndexOf(ownerHost);
-            ownerHost = ownerHost with { Url = pack.HostUrl };
-            store.State.Hosts[index] = ownerHost; store.Save();
-        }
-        var latest = match.ReleaseId == null ? null : await api.ManifestAsync(match.Id, ct);
-        var path = DraftPath(ownerHost.Id, match.Id); var loaded = File.Exists(path) ? JsonSerializer.Deserialize<DraftState>(File.ReadAllText(path), JsonDefaults.Options) : null;
-        loaded ??= new() { BaseReleaseId = latest?.ReleaseId, Files = latest?.Files.Select(f => new DraftItem(f, null)).ToList() ?? [] };
-        selectedHost = ownerHost; selectedPack = match; published = latest; draft = loaded; ShowPublishing(); Status("Owner workspace opened.");
-    });
+            EnsureLocalHostAvailable(pack);
+            using var api = new HearthApi(pack.HostUrl, pack.Token, certificatePin: pack.CertificatePin, hostName: pack.Name);
+            var owned = await api.ListPacksAsync(ct);
+            match = owned.FirstOrDefault(p => p.Id == pack.PackId) ?? throw new InvalidOperationException("Ask the host administrator to make you an owner of this pack first.");
+            var ownerHost = store.State.Hosts.FirstOrDefault(h => !h.IsDelegated && h.OwnerToken == pack.Token && (h.Url == pack.HostUrl || (h.HostId == pack.HostId && h.CertificatePin == pack.CertificatePin && pack.HostId != null)));
+            if (ownerHost == null)
+            {
+                ownerHost = store.State.Hosts.FirstOrDefault(h => h.IsDelegated && h.HostId == pack.HostId && h.CertificatePin == pack.CertificatePin && (pack.HostId != null || h.Url == pack.HostUrl));
+                if (ownerHost == null) { ownerHost = new(Guid.NewGuid().ToString("N"), "Shared with me · " + new Uri(pack.HostUrl).Authority, pack.HostUrl, pack.Token, pack.CertificatePin, pack.HostId, true); store.State.Hosts.Add(ownerHost); store.Save(); }
+                // The group is shared, but each pack retains its own scoped member credential.
+                ownerHost = ownerHost with { OwnerToken = pack.Token, Url = pack.HostUrl };
+            }
+            selectedHost = ownerHost; modFilter = "";
+        });
+        if (match != null) await OpenEditor(match);
+    }
     private void ShowAddPack()
     {
         PageStart("join", "Add modpack", "");
         var join = Card("Join your friends", "Paste their invite. The pack owner approves your request before you can play.");
         var inviteBox = Field(join, "Invite link", pendingInvite); inviteBox.MaxLength = 4096;
-        var name = Field(join, "Your name", store.State.DisplayName); name.MaxLength = 80;
+        join.Children.Add(Text("Requesting as " + store.State.DisplayName, 15, true));
+        join.Children.Add(Row(Button("Change name in Settings", () => { pendingInvite = inviteBox.Text; ShowSettings(); }, true)));
         join.Children.Add(Row(Button("Request access", () => _ = Run("Requesting access…", async ct =>
         {
-            var result = await PackJoining.JoinAsync(store, Invite.Parse(inviteBox.Text), name.Text, ct);
-            ProfileLabel.Text = store.State.DisplayName.ToUpperInvariant(); pendingInvite = ""; SelectPack(result.Pack);
+            if (Uri.TryCreate(inviteBox.Text.Trim(), UriKind.Absolute, out var link) && link.Scheme == "hearth" && link.Host == "host") throw new InvalidOperationException("This is a host connection link for the owner. Open Share packs → Connect an existing host, or ask for a pack invite.");
+            var result = await PackJoining.JoinAsync(store, Invite.Parse(inviteBox.Text), store.State.DisplayName, ct);
+            pendingInvite = ""; SelectPack(result.Pack);
+            if (result.Status == "pending") ShowPendingFingerprint(result.Pack);
             Status(result.Status == "approved" ? "Pack connected. Your installed files and preferences were kept."
                 : result.Reused ? "Your request is waiting for the owner's approval." : "Request sent. Ask your friend to approve you.");
         }))));
